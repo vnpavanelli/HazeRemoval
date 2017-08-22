@@ -1,9 +1,31 @@
 #include "itkImage.h"
 #include "itkImageFileReader.h"
+#include "itkCastImageFilter.h"
 #include "QuickView.h"
+#include <armadillo>
  
+  typedef float PixelComponent;
+  typedef itk::RGBPixel< PixelComponent >    PixelType;
+  typedef itk::Image<PixelType, 2> ImageType;
+  typedef itk::Image<PixelComponent, 2> ImageGrayType;
+
+  const double epsilon = 0.0000001;
+  const unsigned int wk = 9;
+
+
 template<typename TImageType>
 static void ReadFile(std::string filename, typename TImageType::Pointer image);
+void minima(typename ImageType::Pointer image_in, typename ImageGrayType::Pointer image_min);
+void dark_channel(typename ImageGrayType::Pointer image_min, typename ImageGrayType::Pointer image_dark);
+double achaA(typename ImageGrayType::Pointer image_dark, typename ImageType::Pointer image_in);
+void tiraHaze(ImageType::Pointer image_in, ImageGrayType::Pointer image_gray, ImageType::Pointer image_out, double pixel_A);
+void corrigeA(ImageType::Pointer image_in, double A);
+void matting(ImageType::Pointer image_in);
+double laplacian(ImageType::Pointer image_in, unsigned int ix, unsigned int iy, unsigned int jx, unsigned int jy);
+double Lij(ImageType::Pointer image_in, int ix, int iy, int jx, int jy);
+
+
+void uchar2float(typename ImageType::Pointer image, typename ImageType::Pointer image_in);
  
 int main(int argc, char *argv[])
 {
@@ -15,35 +37,13 @@ int main(int argc, char *argv[])
     }
   std::string inputFilename = argv[1];
  
-  typedef itk::ImageIOBase::IOComponentType ScalarPixelType;
-  typedef itk::RGBPixel< unsigned char >    PixelType;
- 
-  itk::ImageIOBase::Pointer imageIO =
-        itk::ImageIOFactory::CreateImageIO(
-            inputFilename.c_str(), itk::ImageIOFactory::ReadMode);
-  if( !imageIO )
-  {
-    std::cerr << "Could not CreateImageIO for: " << inputFilename << std::endl;
-    return EXIT_FAILURE;
-  }
-  imageIO->SetFileName(inputFilename);
-  imageIO->ReadImageInformation();
-  const ScalarPixelType pixelType = imageIO->GetComponentType();
-  std::cout << "Pixel Type is " << imageIO->GetComponentTypeAsString(pixelType) // 'double'
-            << std::endl;
-  const size_t numDimensions =  imageIO->GetNumberOfDimensions();
-  std::cout << "numDimensions: " << numDimensions << std::endl; // '2'
- 
-  std::cout << "component size: " << imageIO->GetComponentSize() << std::endl; // '8'
-  std::cout << "pixel type (string): " << imageIO->GetPixelTypeAsString(imageIO->GetPixelType()) << std::endl; // 'vector'
-  std::cout << "pixel type: " << imageIO->GetPixelType() << std::endl; // '5'
 
-  typedef itk::Image<PixelType, 2> ImageType;
-  typedef itk::Image<unsigned char, 2> ImageGrayType;
   ImageType::Pointer image = ImageType::New();
-  ImageType::Pointer image2 = ImageType::New();
+  ImageType::Pointer image_in = ImageType::New();
+  ImageType::Pointer image_out = ImageType::New();
   ImageGrayType::Pointer image_min = ImageGrayType::New();
   ImageGrayType::Pointer image_dark = ImageGrayType::New();
+
   ReadFile<ImageType>(inputFilename, image);
   
   ImageGrayType::RegionType region;
@@ -59,26 +59,90 @@ int main(int argc, char *argv[])
   image_min->SetRegions(region);
   image_min->Allocate();
 
-  image2->SetRegions(region);
-  image2->Allocate();
+  image_in->SetRegions(region);
+  image_in->Allocate();
+
+  image_out->SetRegions(region);
+  image_out->Allocate();
+
+  uchar2float (image, image_in);
+  matting (image_in);
+  return 0;
+  minima (image_in, image_min);
+  dark_channel (image_min, image_dark);
+  double pixel_A = achaA(image_dark, image_in);
+  std::cout << "Valor de A atmosferico: " << pixel_A << std::endl;
+
+  corrigeA (image_in, pixel_A);
+  minima (image_in, image_min);
+  dark_channel (image_min, image_dark);
+
+  tiraHaze(image_in, image_dark, image_out, pixel_A);
+
+
+  std::cout << "Exibindo imagens" << std::endl;
+
+  QuickView viewer;
+  viewer.AddImage(image_in.GetPointer());
+  viewer.AddImage(image_out.GetPointer());
+  viewer.Visualize();
+
+  return EXIT_SUCCESS;
+}
+ 
+template<typename TImageType>
+void ReadFile(std::string filename, typename TImageType::Pointer image)
+{
+
+  typedef itk::ImageFileReader<TImageType> ReaderType;
+  typename ReaderType::Pointer reader = ReaderType::New();
+ 
+  reader->SetFileName(filename);
+  reader->Update();
+
+  image->Graft(reader->GetOutput());
+}
+
+void uchar2float(typename ImageType::Pointer image, typename ImageType::Pointer image_in) {
+  ImageType::SizeType size;
+  size = image->GetLargestPossibleRegion().GetSize();
+  /* transforma imagem unsigned char em float */
+  for (unsigned int i = 0; i < size[0]; i++) {
+      for (unsigned int j = 0; j < size[1]; j++) {
+          auto pixel = image->GetPixel({i,j});
+          pixel[0] /= 255.0;
+          pixel[1] /= 255.0;
+          pixel[2] /= 255.0;
+          image_in->SetPixel({i, j}, pixel);
+      }
+  }
+}
+
+void minima(typename ImageType::Pointer image_in, typename ImageGrayType::Pointer image_min) {
+  ImageType::SizeType size;
+  size = image_in->GetLargestPossibleRegion().GetSize();
 
   std::cout << "Criando imagem minima..." << std::endl;
   /* Criar imagem com minimo dentre os canais RGB */
   for (unsigned int i = 0; i < size[0]; i++) {
       for (unsigned int j = 0; j < size[1]; j++) {
-          auto pixel = image->GetPixel({i,j});
-          unsigned char min = std::min(pixel[0], std::min(pixel[1], pixel[2]));
+          auto pixel = image_in->GetPixel({i,j});
+          double min = std::min(pixel[0], std::min(pixel[1], pixel[2]));
           image_min->SetPixel({i, j}, min);
       }
   }
+}
 
+void dark_channel(typename ImageGrayType::Pointer image_min, typename ImageGrayType::Pointer image_dark) {
+  ImageType::SizeType size;
+  size = image_min->GetLargestPossibleRegion().GetSize();
   const unsigned int Patch_window = 15;
 
   std::cout << "Criando Dark Channel..." << std::endl;
   /* Criar o Prior Dark Channel usando o minimo de um filtro Patch_window X Patch_window (e.g. 15x15) */
   for (unsigned int i = 0; i < size[0]; i++) {
       for (unsigned int j = 0; j < size[1]; j++) {
-          unsigned char min = 255;
+          auto min = image_min->GetPixel({i,j});
           unsigned int i1, i2, j1, j2;
           i1 = (i < Patch_window) ? 0 : i-Patch_window;
           i2 = (i+Patch_window >= size[0]) ? size[0] : i+Patch_window;
@@ -92,75 +156,241 @@ int main(int argc, char *argv[])
           image_dark->SetPixel({i,j}, min);
       }
   }
+}
+
+
+double achaA(typename ImageGrayType::Pointer image_dark, typename ImageType::Pointer image_in) {
+  ImageType::SizeType size;
+  size = image_in->GetLargestPossibleRegion().GetSize();
 
   std::cout << "Procurando valor de A..." << std::endl;
   unsigned int total_pixels = size[0]*size[1];
   int porcento01 = ceil((double) total_pixels * 0.001);
-  unsigned char pixel_max = 255;
+  float pixel_max = 1.0f;
   std::cout << "Total pixels: " << total_pixels << std::endl;
   std::cout << "0.1%: " << porcento01 << std::endl;
   PixelType::LuminanceType pixel_A=0;
   do {
       for (unsigned int i = 0; i < size[0] && porcento01 > 0; i++) {
           for (unsigned int j = 0; j < size[1] && porcento01 > 0; j++) {
-              unsigned char pixel = image_dark->GetPixel({i,j});
+              auto pixel = image_dark->GetPixel({i,j});
               if (pixel >= pixel_max) {
                   /*
                   std::cout << " -> pixel: " << pixel << " >= " << pixel_max << "   porcento01:" << porcento01 << std::endl;
                   std::cout << "    Luminance: " << image->GetPixel({i,j}).GetLuminance() << std::endl;
                   */
                   porcento01--;
-                  pixel_A = std::max(pixel_A, image->GetPixel({i,j}).GetLuminance());
+                  pixel_A = std::max(pixel_A, image_in->GetPixel({i,j}).GetLuminance());
               }
           }
       }
-      pixel_max--;
+      pixel_max-=.01;
   } while (porcento01>0 && pixel_max >0);
+  return pixel_A;
+}
 
-  std::cout << "Valor de A atmosferico: " << pixel_A << std::endl;
 
-//  double A = (double) pixel_A/255;
+void tiraHaze(ImageType::Pointer image_in, ImageGrayType::Pointer image_dark, ImageType::Pointer image_out, double pixel_A) {
+  ImageType::SizeType size;
+  size = image_in->GetLargestPossibleRegion().GetSize();
 
-  unsigned char A = pixel_A;
-  const unsigned char t_max = 25;
+  PixelComponent A = pixel_A;
+  PixelComponent t_max = 0.1;
   for (unsigned int i = 0; i < size[0]; i++) {
       for (unsigned int j = 0; j < size[1]; j++) {
-          PixelType pixel = image->GetPixel({i,j});
+          PixelType pixel = image_in->GetPixel({i,j});
           PixelType pixelout;
-          unsigned char t_dark = 255-(image_dark->GetPixel({i,j}));
-          double t = (double) std::max(t_max,t_dark) / 255.0;
-          pixelout[0] = (double) (pixel[0] - A)/t + A; 
-          pixelout[1] = (double) (pixel[1] - A)/t + A; 
-          pixelout[2] = (double) (pixel[2] - A)/t + A; 
+          PixelComponent t_dark = 1.0-0.95*(image_dark->GetPixel({i,j}));
+          double t = std::max(t_max,t_dark);
+          pixelout[0] = (pixel[0] - A)/t + A; 
+          pixelout[1] = (pixel[1] - A)/t + A; 
+          pixelout[2] = (pixel[2] - A)/t + A; 
           /*
           std::cout << " -> (" << i << "," << j << ") t: " << (int) t << " pixel0: " << (int) pixel[0] << " pixelout0: " << (int) pixelout[0] 
                << "P-A:" << (int) pixel[0]-A << " P-A/t: " <<(int)  (pixel[0]-A)/t
               << std::endl;
               */
-          image2->SetPixel({i,j}, pixelout);
+          image_out->SetPixel({i,j}, pixelout);
       }
   }
-
-
-
-  QuickView viewer;
-  viewer.AddImage(image.GetPointer());
-  viewer.AddImage(image2.GetPointer());
-//  viewer.AddImage(image_min.GetPointer());
-//  viewer.AddImage(image_dark.GetPointer());
-  viewer.Visualize();
-
-  return EXIT_SUCCESS;
 }
- 
-template<typename TImageType>
-void ReadFile(std::string filename, typename TImageType::Pointer image)
-{
-  typedef itk::ImageFileReader<TImageType> ReaderType;
-  typename ReaderType::Pointer reader = ReaderType::New();
- 
-  reader->SetFileName(filename);
-  reader->Update();
- 
-  image->Graft(reader->GetOutput());
+
+void corrigeA(ImageType::Pointer image_in, double A) {
+  ImageType::SizeType size;
+  size = image_in->GetLargestPossibleRegion().GetSize();
+
+  for (unsigned int i = 0; i < size[0]; i++) {
+      for (unsigned int j = 0; j < size[1]; j++) {
+          auto pixel = image_in->GetPixel({i,j});
+          pixel[0] /= A;
+          pixel[1] /= A;
+          pixel[2] /= A;
+          image_in->SetPixel({i,j}, pixel);
+      }
+  }
 }
+
+void matting(ImageType::Pointer image_in) {
+    ImageType::SizeType size;
+    size = image_in->GetLargestPossibleRegion().GetSize();
+    unsigned largura=5, altura=5;
+//    size[0] = 4; size[1] = 4;
+    unsigned int total_pixels = size[0]*size[1];
+    const unsigned int wk = 9;
+    std::cout << "Total pixels: " << total_pixels << std::endl;
+    arma::sp_mat L(total_pixels, total_pixels);
+
+    std::cout << "Laplacian: " << Lij (image_in, 0, 0, 2, 2) << std::endl;
+    std::cout << "Preenchendo L: " << std::flush;
+
+    for (int i1 = 0; i1 < size[0]; i1++) {
+        std::cout << " -> " << i1 << " de " << size[0] << std::endl;
+        for (int j1=0; j1 < size[1]; j1++) {
+            for (int i2 = std::max(i1-2,0) ; i2 <= std::min(i1+2,(int) size[0]-1) ; i2++) {
+                for (int j2 = std::max(j1-2,0) ; j2 <= std::min(j1+2,(int) size[1]-1) ; j2++) {
+                    //std::cout << "    -> Ponto (" << i1 << "," << j1 << ") e (" << i2 << "," << j2 << ")" << std::endl;
+                    if (abs(i1-i2)<=2 && abs(j1-j2)<=2 && i2>=0 && j2 >= 0) {
+//                        std::cout << "    -> Ponto (" << i1 << "," << j1 << ") e (" << i2 << "," << j2 << ")" << std::endl;
+                        double tmp = Lij(image_in, i1, j1, i2, j2);
+//                        std::cout << "        -> L (" << i1*size[0]+j1 << "," << i2*size[0]+j2 << ") = " << tmp << std::endl;
+                        L(i1*size[0]+j1, i2*size[0]+j2) = tmp;
+                    }
+
+                }
+            }
+        }
+    }
+
+    std::cout << " feito" << std::endl;
+//    L.print(std::cout);
+}
+
+double Lij(ImageType::Pointer image_in, int ix, int iy, int jx, int jy) {
+//    if (abs(ix-jx)>2 || abs(iy-jy)>2) return 0.0;
+    if (ix > jx) std::swap(ix, jx);
+    if (iy > jy) std::swap(iy, jy);
+
+    arma::mat I_i(1,3), I_j(1,3);
+    {
+        auto Pi = image_in->GetPixel({ix,iy});
+        I_i(0,0) = Pi[0];
+        I_i(0,1) = Pi[1];
+        I_i(0,2) = Pi[2];
+        auto Pj = image_in->GetPixel({jx,jy});
+        I_j(0,0) = Pj[0];
+        I_j(0,1) = Pj[1];
+        I_j(0,2) = Pj[2];
+    }
+    double retorno = 0.0;
+
+    for (unsigned int x=ix; x<=jx+2; x++) {
+        for (unsigned int y=iy; y<=jy+2; y++) {
+//            std::cout << "Testando ponto " << x << "," << y << std::endl;
+            if (    (abs(x-ix)<2 && abs(y-iy)<2)    &&    (abs(x-jx)<2 && abs(y-jy)<2) && x > 0 && y > 0  ) {
+//                std::cout << "Janela em  " << x << "," << y << "  contem os dois pontos" << std::endl;
+
+                /* Preenche janela W */
+                arma::mat W(9,3);
+                for (unsigned int i=0; i<3; i++) {
+                    for (unsigned int j=0; j<3; j++) {
+                        auto pixel = image_in->GetPixel({i+x-1,j+y-1});
+                        W(i+j*3,0) = pixel[0];
+                        W(i+j*3,1) = pixel[1];
+                        W(i+j*3,2) = pixel[2];
+                    }
+                }
+
+                /* Calcula covariancia e media */
+                auto Wcov = arma::cov(W,W);
+                auto Wmean = arma::mean(W,0);
+
+                auto tmp = I_i - Wmean;
+                //                std::cout << "Tmp: " << std::endl;
+                //                tmp.print(std::cout);
+                auto tmp2 = Wcov + (epsilon/(double)wk)*arma::eye(3,3);
+                //                std::cout << "Tmp2: " << std::endl;
+                //                tmp2.print(std::cout);
+                auto tmp3 = (I_j-Wmean);
+                //                std::cout << "Tmp3: " << std::endl;
+                //                tmp3.print(std::cout);
+
+                auto ltmp = tmp * tmp2 * arma::trans(tmp3);
+                //                std::cout << "Ltmp: " << std::endl;
+                //                ltmp.print(std::cout);
+                double ltmp2 = 1+arma::accu(ltmp);
+                retorno += ( (ix==jx && iy==jy ? 1 : 0) - (1.0/(double) wk)*(ltmp2));
+            }
+        }
+    }
+    return retorno;
+}
+
+double laplacian(ImageType::Pointer image_in, unsigned int ix, unsigned int iy, unsigned int jx, unsigned int jy) {
+    if (ix > jx) std::swap(ix, jx);
+    if (iy > jy) std::swap(iy, jy);
+    unsigned int wk = (jx-ix+1)*(jy-iy+1);
+    std::cout << "wk=" << wk << std::endl;
+    double retorno = 0.0;
+    arma::mat W(wk,3);
+    unsigned int c=0;
+    for (unsigned int x=ix; x <= jx; x++) {
+        for (unsigned int y=iy; y <= jy; y++) {
+            auto pixel = image_in->GetPixel({x,y});
+            W(c,0) = pixel[0];
+            W(c,1) = pixel[1];
+            W(c,2) = pixel[2];
+            c++;
+        }
+    }
+
+    auto Wcov = arma::cov(W,W);
+    auto Wmean = arma::mean(W,0);
+    std::cout << "Matrizes:" << std::endl;
+    std::cout << "W:" << std::endl;
+    W.print(std::cout);
+    std::cout << "Wcov:" << std::endl;
+    Wcov.print(std::cout);
+    std::cout << "Wmean:" << std::endl;
+    Wmean.print(std::cout);
+
+    for (unsigned int x=ix; x <= jx; x++) {
+        for (unsigned int y=iy; y <= jy; y++) {
+            unsigned int c=0;
+            for (unsigned int i1=x-1;i1<=x+1;i1++)
+                for (unsigned int j1=y-1;j1<=y+1;j1++)
+                    for (unsigned int i2=x-1;i2<=x+1;i2++)
+                        for (unsigned int j2=y-1;j2<=y+1;j2++) {
+                            auto Pi = image_in->GetPixel({i1, j1});
+                            auto Pj = image_in->GetPixel({i2, j2});
+                            arma::mat Ii(1,3), Ij(1,3);
+                            Ii(0,0) = Pi[0];
+                            Ii(0,1) = Pi[1];
+                            Ii(0,2) = Pi[2];
+
+                            Ij(0,0) = Pj[0];
+                            Ij(0,1) = Pj[1];
+                            Ij(0,2) = Pj[2];
+
+                            auto tmp = Ii - Wmean;
+                            //                std::cout << "Tmp: " << std::endl;
+                            //                tmp.print(std::cout);
+                            auto tmp2 = Wcov + (epsilon/(double)wk)*arma::eye(3,3);
+                            //                std::cout << "Tmp2: " << std::endl;
+                            //                tmp2.print(std::cout);
+                            auto tmp3 = (Ij-Wmean);
+                            //                std::cout << "Tmp3: " << std::endl;
+                            //                tmp3.print(std::cout);
+
+                            auto ltmp = tmp * tmp2 * arma::trans(tmp3);
+                            //                std::cout << "Ltmp: " << std::endl;
+                            //                ltmp.print(std::cout);
+                            double ltmp2 = 1+arma::accu(ltmp);
+                            retorno += ( (i1==i2 && j1==j2 ? 1 : 0) - (1.0/(double) wk)*(ltmp2));
+                        }
+        }
+    }
+    return retorno;
+}
+
+
+
