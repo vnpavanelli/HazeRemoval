@@ -3,13 +3,14 @@
 #include "itkCastImageFilter.h"
 #include "QuickView.h"
 #include <armadillo>
+#include <stdlib.h>
  
   typedef float PixelComponent;
   typedef itk::RGBPixel< PixelComponent >    PixelType;
   typedef itk::Image<PixelType, 2> ImageType;
   typedef itk::Image<PixelComponent, 2> ImageGrayType;
 
-  const double epsilon = 0.0000001;
+  const double epsilon = 1e-3;
   const unsigned int wk = 9;
 
 
@@ -20,9 +21,10 @@ void dark_channel(typename ImageGrayType::Pointer image_min, typename ImageGrayT
 double achaA(typename ImageGrayType::Pointer image_dark, typename ImageType::Pointer image_in);
 void tiraHaze(ImageType::Pointer image_in, ImageGrayType::Pointer image_gray, ImageType::Pointer image_out, double pixel_A);
 void corrigeA(ImageType::Pointer image_in, double A);
-void matting(ImageType::Pointer image_in);
+void matting(ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu, ImageGrayType::Pointer image_t);
 double laplacian(ImageType::Pointer image_in, unsigned int ix, unsigned int iy, unsigned int jx, unsigned int jy);
 double Lij(ImageType::Pointer image_in, int ix, int iy, int jx, int jy);
+void calculaT(typename ImageGrayType::Pointer image_dark, typename ImageGrayType::Pointer image_t);
 
 
 void uchar2float(typename ImageType::Pointer image, typename ImageType::Pointer image_in);
@@ -43,6 +45,8 @@ int main(int argc, char *argv[])
   ImageType::Pointer image_out = ImageType::New();
   ImageGrayType::Pointer image_min = ImageGrayType::New();
   ImageGrayType::Pointer image_dark = ImageGrayType::New();
+  ImageGrayType::Pointer image_tchapeu = ImageGrayType::New();
+  ImageGrayType::Pointer image_t = ImageGrayType::New();
 
   ReadFile<ImageType>(inputFilename, image);
   
@@ -65,25 +69,33 @@ int main(int argc, char *argv[])
   image_out->SetRegions(region);
   image_out->Allocate();
 
+  image_tchapeu->SetRegions(region);
+  image_tchapeu->Allocate();
+
+  image_t->SetRegions(region);
+  image_t->Allocate();
+
   uchar2float (image, image_in);
-  matting (image_in);
-  return 0;
   minima (image_in, image_min);
   dark_channel (image_min, image_dark);
   double pixel_A = achaA(image_dark, image_in);
   std::cout << "Valor de A atmosferico: " << pixel_A << std::endl;
 
+
   corrigeA (image_in, pixel_A);
   minima (image_in, image_min);
   dark_channel (image_min, image_dark);
+  calculaT (image_dark, image_tchapeu);
+  matting (image_in, image_tchapeu, image_t);
 
   tiraHaze(image_in, image_dark, image_out, pixel_A);
-
 
   std::cout << "Exibindo imagens" << std::endl;
 
   QuickView viewer;
   viewer.AddImage(image_in.GetPointer());
+  viewer.AddImage(image_t.GetPointer());
+  viewer.AddImage(image_tchapeu.GetPointer());
   viewer.AddImage(image_out.GetPointer());
   viewer.Visualize();
 
@@ -131,6 +143,18 @@ void minima(typename ImageType::Pointer image_in, typename ImageGrayType::Pointe
           image_min->SetPixel({i, j}, min);
       }
   }
+}
+
+
+void calculaT(typename ImageGrayType::Pointer image_dark, typename ImageGrayType::Pointer image_t) {
+  ImageType::SizeType size;
+  size = image_dark->GetLargestPossibleRegion().GetSize();
+  for (unsigned int i = 0; i < size[0]; i++) {
+      for (unsigned int j = 0; j < size[1]; j++) {
+          image_t->SetPixel({i,j}, 1.0 - 0.95*image_dark->GetPixel({i,j}));
+      }
+  }
+
 }
 
 void dark_channel(typename ImageGrayType::Pointer image_min, typename ImageGrayType::Pointer image_dark) {
@@ -230,24 +254,53 @@ void corrigeA(ImageType::Pointer image_in, double A) {
   }
 }
 
-void matting(ImageType::Pointer image_in) {
+void checaL (arma::sp_mat &L) {
+    using namespace std;
+    cout << "Checando matriz L" << endl;
+    cout << "Checando simetria..." << endl;
+    for (int i = 0; i < L.n_rows; i++) {
+        for (int j = i+1; j < L.n_cols; j++) {
+            if (i != j) {
+                if (L(i,j) != L(j,i)) {
+                    cout << "Erro na simetria!!! (" << i << "," << j << ") -> " << L(i,j) << "!=" << L(j,i) << endl;
+                }
+            }
+        }
+    }
+    for (int i = 0; i < L.n_rows; i++) {
+//        cout << "Fazendo L(" << i << "," << i << ")" << endl;
+        double soma=0.0;
+        for (int j=0; j < L.n_cols; j++) {
+            if (i!=j) {
+//                cout << "Somando " << L(i,j) << endl;
+                soma += L(i,j);
+            }
+        }
+//        cout << "L(" << i << "," << i << ") = " << L(i,i) << " == " << soma << endl;
+        L(i,i) = soma;
+    }
+}
+
+void matting(ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu, ImageGrayType::Pointer image_t) {
     ImageType::SizeType size;
     size = image_in->GetLargestPossibleRegion().GetSize();
     unsigned largura=5, altura=5;
 //    size[0] = 4; size[1] = 4;
     unsigned int total_pixels = size[0]*size[1];
     const unsigned int wk = 9;
+    const double lambda = 1e-4;
     std::cout << "Total pixels: " << total_pixels << std::endl;
     arma::sp_mat L(total_pixels, total_pixels);
 
-    std::cout << "Laplacian: " << Lij (image_in, 0, 0, 2, 2) << std::endl;
+    std::cout << "Laplacian: " << Lij (image_in, 0, 0, 1, 1) << std::endl;
     std::cout << "Preenchendo L: " << std::flush;
 
+//                exit(0);
     for (int i1 = 0; i1 < size[0]; i1++) {
         std::cout << " -> " << i1 << " de " << size[0] << std::endl;
         for (int j1=0; j1 < size[1]; j1++) {
-            for (int i2 = std::max(i1-2,0) ; i2 <= std::min(i1+2,(int) size[0]-1) ; i2++) {
-                for (int j2 = std::max(j1-2,0) ; j2 <= std::min(j1+2,(int) size[1]-1) ; j2++) {
+            for (int i2 = std::max(i1-2,0) ; i2 < std::min(i1+3,(int) size[0]) ; i2++) {
+                for (int j2 = std::max(j1-2,0) ; j2 < std::min(j1+3,(int) size[1]) ; j2++) {
                     //std::cout << "    -> Ponto (" << i1 << "," << j1 << ") e (" << i2 << "," << j2 << ")" << std::endl;
                     if (abs(i1-i2)<=2 && abs(j1-j2)<=2 && i2>=0 && j2 >= 0) {
 //                        std::cout << "    -> Ponto (" << i1 << "," << j1 << ") e (" << i2 << "," << j2 << ")" << std::endl;
@@ -261,11 +314,44 @@ void matting(ImageType::Pointer image_in) {
         }
     }
 
+    std::cout << "L preenchida" << std::endl;
+//    L.print(std::cout);
+    checaL(L);
+    std::cout << "Fazendo L + lambda" << std::endl;
+
+    L += arma::eye(total_pixels, total_pixels)*lambda;
+    //L = arma::eye(total_pixels, total_pixels)*2e-4;
+
+    std::cout << "Fazendo tchapeu" << std::endl;
+    arma::mat tchapeu(total_pixels,1);
+    unsigned int c=0;
+    auto *ptr = image_tchapeu->GetBufferPointer();
+    while (c < total_pixels) {
+        tchapeu(c,0) = *(ptr+c) * lambda;
+        c++;
+    }
+
+    std::cout << "Fazendo spsolve" << std::endl;
+    auto t = arma::spsolve(L,tchapeu);
+
+    std::cout << "Fazendo t" << std::endl;
+    c = 0;
+    ptr = image_t->GetBufferPointer();
+    while (c < total_pixels) {
+        *(ptr+c) = t(c,0);
+        c++;
+    }
+
     std::cout << " feito" << std::endl;
 //    L.print(std::cout);
 }
 
 double Lij(ImageType::Pointer image_in, int ix, int iy, int jx, int jy) {
+
+    ImageType::SizeType size;
+    size = image_in->GetLargestPossibleRegion().GetSize();
+
+
 //    if (abs(ix-jx)>2 || abs(iy-jy)>2) return 0.0;
     if (ix > jx) std::swap(ix, jx);
     if (iy > jy) std::swap(iy, jy);
@@ -286,39 +372,65 @@ double Lij(ImageType::Pointer image_in, int ix, int iy, int jx, int jy) {
     for (unsigned int x=ix; x<=jx+2; x++) {
         for (unsigned int y=iy; y<=jy+2; y++) {
 //            std::cout << "Testando ponto " << x << "," << y << std::endl;
-            if (    (abs(x-ix)<2 && abs(y-iy)<2)    &&    (abs(x-jx)<2 && abs(y-jy)<2) && x > 0 && y > 0  ) {
+            if (    (abs(x-ix)<2 && abs(y-iy)<2)    &&    (abs(x-jx)<2 && abs(y-jy)<2) && x >= 0 && y >= 0  ) {
 //                std::cout << "Janela em  " << x << "," << y << "  contem os dois pontos" << std::endl;
 
                 /* Preenche janela W */
                 arma::mat W(9,3);
                 for (unsigned int i=0; i<3; i++) {
                     for (unsigned int j=0; j<3; j++) {
-                        auto pixel = image_in->GetPixel({i+x-1,j+y-1});
-                        W(i+j*3,0) = pixel[0];
-                        W(i+j*3,1) = pixel[1];
-                        W(i+j*3,2) = pixel[2];
+                        int px = abs(i+x-1), py = abs(j+y-1);
+                        if (px >= size[0]) px = size[0]-1;
+                        if (py >= size[1]) py = size[1]-1;
+                        auto pixel = image_in->GetPixel({px,py});
+                        W(i*3+j,0) = pixel[0];
+                        W(i*3+j,1) = pixel[1];
+                        W(i*3+j,2) = pixel[2];
                     }
                 }
 
+
+
+                /*
+                                std::cout << "W: " << std::endl;
+                                W.print(std::cout);
+                                */
+
                 /* Calcula covariancia e media */
                 auto Wcov = arma::cov(W,W);
+                /*
+                                std::cout << "Wcov: " << std::endl;
+                                Wcov.print(std::cout);
+                                */
                 auto Wmean = arma::mean(W,0);
+                /*
+                                std::cout << "Wmean: " << std::endl;
+                                Wmean.print(std::cout);
+                                */
 
                 auto tmp = I_i - Wmean;
-                //                std::cout << "Tmp: " << std::endl;
-                //                tmp.print(std::cout);
-                auto tmp2 = Wcov + (epsilon/(double)wk)*arma::eye(3,3);
-                //                std::cout << "Tmp2: " << std::endl;
-                //                tmp2.print(std::cout);
+                /*
+                                std::cout << "Tmp: " << std::endl;
+                                tmp.print(std::cout);
+                                */
+                auto tmp2 = Wcov.t() + (epsilon/(double)wk)*arma::eye(3,3);
+                /*
+                                std::cout << "Tmp2: " << std::endl;
+                                tmp2.print(std::cout);
+                                */
                 auto tmp3 = (I_j-Wmean);
-                //                std::cout << "Tmp3: " << std::endl;
-                //                tmp3.print(std::cout);
+                /*
+                                std::cout << "Tmp3: " << std::endl;
+                                tmp3.print(std::cout);
+                                */
 
                 auto ltmp = tmp * tmp2 * arma::trans(tmp3);
-                //                std::cout << "Ltmp: " << std::endl;
-                //                ltmp.print(std::cout);
+                /*
+                                std::cout << "Ltmp: " << std::endl;
+                                ltmp.print(std::cout);
+                                */
                 double ltmp2 = 1+arma::accu(ltmp);
-                retorno += ( (ix==jx && iy==jy ? 1 : 0) - (1.0/(double) wk)*(ltmp2));
+                retorno += ( (ix==jx && iy==jy ? 1.0 : 0.0) - (1.0/(double) wk)*(ltmp2));
             }
         }
     }
