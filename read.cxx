@@ -312,9 +312,11 @@ void tiraHaze(ImageType::Pointer image_in, ImageGrayType::Pointer image_dark, Im
           pixelout[0] = (pixel[0] - A[0])/t + A[0]; 
           pixelout[1] = (pixel[1] - A[1])/t + A[1]; 
           pixelout[2] = (pixel[2] - A[2])/t + A[2]; 
+          if (DEBUG) {
           std::cout << " -> (" << i << "," << j << ") t: " << (double) t << " tx: " << t_dark <<  " pixel0: " << (double) pixel[0] << " pixelout0: " << (double) pixelout[0] 
                << " P-A:" << (double) pixel[0]-A[0] << " P-A/t: " <<(double)  (pixel[0]-A[0])/t
               << std::endl;
+          }
           image_out->SetPixel({i,j}, pixelout);
       }
   }
@@ -687,7 +689,7 @@ void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu
         unsigned int c = 0;
         while (c < total_pixels) {
             *(ptr+c) = Mt(c,0);
-            std::cout << "  -> t(" << c << ") = " << Mt(c,0) << "    tchapeu = " << Mtchapeu(c,0) << std::endl;
+            if (DEBUG) std::cout << "  -> t(" << c << ") = " << Mt(c,0) << "    tchapeu = " << Mtchapeu(c,0) << std::endl;
             c++;
         }
     }
@@ -696,7 +698,7 @@ void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu
 double matting_L (ImageType::Pointer image, int i, int j) {
     ImageType::SizeType size;
     size = image->GetLargestPossibleRegion().GetSize();
-    std::vector<int> Ws = achaJanelas (i, j, size);
+    std::vector<int> Ws(achaJanelas (i, j, size));
     if (Ws.size() == 0) return std::numeric_limits<double>::quiet_NaN();
     double soma = 0.0;
     for (auto &w : Ws) {
@@ -769,7 +771,7 @@ arma::mat carregaJanela (ImageType::Pointer image, int w) {
 
 double calculaL (ImageType::Pointer image, int i, int j, int w) {
     using namespace std;
-    static std::map<int, std::pair<arma::mat, arma::mat>> cache;
+//    static std::map<int, std::pair<arma::mat, arma::mat>> cache;
     if (DEBUG) std::cout << "calculaL i=" << i << " j=" << j << " w=" << w << std::endl;
     double resultado = (i==j) ? 1.0 : 0.0;
     /*
@@ -781,16 +783,18 @@ double calculaL (ImageType::Pointer image, int i, int j, int w) {
     arma::mat Ii, Ij;
     Ii << pixelI[0] << arma::endr << pixelI[1] << arma::endr << pixelI[2];
     Ij << pixelJ[0] << arma::endr << pixelJ[1] << arma::endr << pixelJ[2];
-    arma::mat W, Wmean, Wcov;
+//    arma::mat W, Wmean, Wcov;
+    /*
     if (cache.count(w)) {
         Wmean = cache[w].first;
         Wcov = cache[w].second;
     } else {
-        W = carregaJanela(image, w);
-        Wmean = arma::mean(W).t();
-        Wcov = arma::cov(W);
-        cache[w] = {Wmean, Wcov};
-    }
+    */
+    arma::mat W(carregaJanela(image, w));
+    arma::mat Wmean(arma::mean(W).t());
+    arma::mat Wcov(arma::cov(W));
+    //    cache[w] = {Wmean, Wcov};
+    //}
 
     if (DEBUG) {
         Ii.print(cout, "Ii");
