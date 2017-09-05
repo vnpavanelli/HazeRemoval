@@ -6,14 +6,23 @@
 #include <stdlib.h>
 #include <itkNeighborhood.h>
 #include <itkNeighborhoodIterator.h>
+#include <cmath>
+#include <limits>
+#include <math.h>
  
   typedef float PixelComponent;
   typedef itk::RGBPixel< PixelComponent >    PixelType;
   typedef itk::Image<PixelType, 2> ImageType;
   typedef itk::Image<PixelComponent, 2> ImageGrayType;
 
-  const double epsilon = 1e-4; //1e-3;
+  const double epsilon = 1e-7; //1e-3;
+  const double lambda = 1e-4;
   const unsigned int wk = 9;
+
+  const bool DEBUG = false;
+
+    std::map<unsigned int, std::pair<unsigned int, unsigned int>> mapa;
+    std::map<std::pair<unsigned int, unsigned int>, unsigned int> mapa_inv;
 
 
 template<typename TImageType>
@@ -24,10 +33,19 @@ std::vector<double> achaA(typename ImageGrayType::Pointer image_dark, typename I
 void tiraHaze(ImageType::Pointer image_in, ImageGrayType::Pointer image_gray, ImageType::Pointer image_out, std::vector<double> pixel_A);
 void corrigeA(ImageType::Pointer image_in, ImageType::Pointer image_ac, std::vector<double> A);
 void matting(ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu, ImageGrayType::Pointer image_t);
+void matting2(ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu, ImageGrayType::Pointer image_t);
 double laplacian(ImageType::Pointer image_in, unsigned int ix, unsigned int iy, unsigned int jx, unsigned int jy);
 double Lij(ImageType::Pointer image_in, int ix, int iy, int jx, int jy, std::map<unsigned int, arma::mat> const&, std::map<unsigned int, arma::mat> const&);
 void calculaT(typename ImageGrayType::Pointer image_dark, typename ImageGrayType::Pointer image_t);
 arma::mat achaW (ImageType::Pointer image_in, int x, int y);
+bool checaDistancia (int, int, int, int, unsigned int distancia=3);
+bool checaDistancia (int, int, unsigned int distancia=3);
+
+
+double calculaL (ImageType::Pointer image, int i, int j, int w);
+std::vector<int> achaJanelas (int i, int j, ImageType::SizeType size);
+double matting_L (ImageType::Pointer image, int i, int j);
+arma::mat carregaJanela (ImageType::Pointer image, int w);
 
 
 void uchar2float(typename ImageType::Pointer image, typename ImageType::Pointer image_in);
@@ -51,6 +69,7 @@ int main(int argc, char *argv[])
   ImageGrayType::Pointer image_dark = ImageGrayType::New();
   ImageGrayType::Pointer image_tchapeu = ImageGrayType::New();
   ImageGrayType::Pointer image_t = ImageGrayType::New();
+  ImageGrayType::Pointer image_t2 = ImageGrayType::New();
 
   ReadFile<ImageType>(inputFilename, image);
   
@@ -59,6 +78,19 @@ int main(int argc, char *argv[])
   ImageGrayType::SizeType size;
   start[0] = start[1] = 0;
   size = image->GetLargestPossibleRegion().GetSize();
+
+    for (int i = 0; i < size[0]; i++) {
+        for (int j = 0; j < size[1]; j++) {
+            mapa[j*size[0]+i] = {i,j};
+            mapa_inv[{i,j}] = j*size[0]+i;
+        }
+    }
+
+
+  std::cout << "Image dimensions: " << size[0] << " x " << size[1] << std::endl;
+
+
+
   region.SetSize(size);
   region.SetIndex(start);
   image_dark->SetRegions(region);
@@ -82,6 +114,10 @@ int main(int argc, char *argv[])
   image_t->SetRegions(region);
   image_t->Allocate();
 
+
+  image_t2->SetRegions(region);
+  image_t2->Allocate();
+
   uchar2float (image, image_in);
   minima (image_in, image_min);
   dark_channel (image_min, image_dark);
@@ -92,7 +128,8 @@ int main(int argc, char *argv[])
   minima (image_ac, image_min);
   dark_channel (image_min, image_dark);
   calculaT (image_dark, image_tchapeu);
-  //matting (image_in, image_tchapeu, image_t);
+  matting (image_in, image_tchapeu, image_t);
+  matting2 (image_in, image_tchapeu, image_t2);
 
   tiraHaze(image_in, image_tchapeu, image_out, pixel_A);
 
@@ -103,6 +140,7 @@ int main(int argc, char *argv[])
   viewer.AddImage(image_min.GetPointer(), true, "min");
   viewer.AddImage(image_dark.GetPointer(), true, "dark");
   viewer.AddImage(image_t.GetPointer(), true, "t");
+  viewer.AddImage(image_t2.GetPointer(), true, "t2");
   viewer.AddImage(image_tchapeu.GetPointer(), true, "tchapeu");
   viewer.AddImage(image_out.GetPointer(), true, "out");
   viewer.Visualize();
@@ -286,46 +324,50 @@ void checaL (arma::sp_mat &L) {
         }
     }
     for (int i = 0; i < L.n_rows; i++) {
-        cout << "Fazendo L(" << i << "," << i << ")" << endl;
         double soma=0.0;
         for (int j=0; j < L.n_cols; j++) {
             if (i!=j) {
-                cout << "Somando " << L(i,j) << endl;
                 soma += L(i,j);
             }
         }
         soma *= -1.0;
-        cout << "L(" << i << "," << i << ") = " << L(i,i) << " == " << soma << endl;
-        L(i,i) = soma;
+        if (abs(L(i,i)-soma) < 1e-6) cout << "L(" << i << "," << i << ") = " << L(i,i) << " != " << soma << endl;
+        //L(i,i) = soma;
     }
+}
+
+bool checaDistancia (int ix, int iy, int jx, int jy, unsigned int distancia) {
+    if ( abs(ix-jx) < distancia && abs(iy-jy) < distancia) {
+        return true;
+    }
+    return false;
+}
+
+bool checaDistancia (int i, int j, unsigned int distancia) {
+    return checaDistancia(mapa[i].first, mapa[i].second, mapa[j].first, mapa[j].second, distancia);
 }
 
 void matting(ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu, ImageGrayType::Pointer image_t) {
     ImageType::SizeType size;
     size = image_in->GetLargestPossibleRegion().GetSize();
-    unsigned largura=5, altura=5;
 //    size[0] = 4; size[1] = 4;
     unsigned int total_pixels = size[0]*size[1];
-    const double lambda = 1e-4;
     std::cout << "Total pixels: " << total_pixels << std::endl;
 
+    /*
     std::map<unsigned int, std::pair<unsigned int, unsigned int>> mapa;
     std::map<std::pair<unsigned int, unsigned int>, unsigned int> mapa_inv;
-    for (int i = 0; i < size[0]; i++) {
-        for (int j = 0; j < size[1]; j++) {
-            mapa[j*size[0]+i] = {i,j};
-            mapa_inv[{i,j}] = j*size[0]+i;
-        }
-    }
-
+    */
     std::map<unsigned int, arma::mat> Wcov, Wmean;
 
     std::cout << "Fazendo Wcov e Wmean..." << std::endl;
     for (int i=0; i<size[0]; i++) {
         for (int j=0; j<size[1]; j++) {
             auto W = achaW(image_in, i, j);
-            Wcov[mapa_inv[{i,j}]] = arma::cov(W);
-            Wmean[mapa_inv[{i,j}]] = arma::mean(W).t();
+//            Wcov[mapa_inv[{i,j}]] = arma::cov(W);
+            unsigned int pos = mapa_inv[{i,j}];
+            Wmean[pos] = arma::mean(W).t();
+            Wcov[pos] = W.t()*W/9 - Wmean[pos]*Wmean[pos].t();
             /*
             W.print(std::cout, "W");
             arma::cov(W).print(std::cout, "Wcov");
@@ -344,14 +386,18 @@ void matting(ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu, 
         for (int j=0; j < i; j++) {
             soma += L(i,j);
         }
-
-        for (int x=mapa[i].first; x < std::min ((unsigned int) mapa[i].first+3, (unsigned int) size[0]); x++) {
-            for (int y=mapa[i].second; y < std::min( (unsigned int) mapa[i].second+3, (unsigned int) size[1]); y++) {
-                if (x != mapa[i].first || y != mapa[i].second) {
-                    unsigned int j = mapa_inv[{x,y}];
-                    double tmp = Lij(image_in, mapa[i].first, mapa[i].second, x, y, Wcov, Wmean);
-                    L(i,j) = L(j,i) = tmp;
-                    soma += tmp;
+        for (int y=mapa[i].second; y<std::min(mapa[i].second+3,(unsigned int) size[1]); y++) {
+            for (int x=mapa[i].first; x<std::min(mapa[i].first+3,(unsigned int) size[0]); x++) {
+//                std::cout << " Lij para (" << x << "," << y << ")" << std::endl;
+                if (checaDistancia(mapa[i].first, mapa[i].second, x, y)) {
+//                    std::cout << " Distancia ok" << std::endl;
+                    int j = mapa_inv[{x,y}];
+//                    std::cout << "   i = " << i << "  j = " << j << std::endl;
+                    if (i != j) {
+                        double tmp = Lij(image_in, mapa[i].first, mapa[i].second, x, y, Wcov, Wmean);
+                        L(i,j) = L(j,i) = tmp;
+                        soma += tmp;
+                    }
                 }
             }
         }
@@ -359,6 +405,20 @@ void matting(ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu, 
     }
 
     std::cout << "L preenchida" << std::endl;
+
+
+    std::cout << "salvando em txt" << std::endl;
+    if (DEBUG) {
+        std::fstream fs;
+        fs.open("L.txt", std::fstream::out);
+        for (int i = 0; i < L.n_rows ; i++) {
+            for (int j = 0; j < L.n_cols; j++) {
+                fs << L(i,j) << " ";
+            }
+            fs << "\n";
+        }
+        fs.close();
+    }
     /*
     L.print(std::cout);
     checaL(L);
@@ -371,11 +431,26 @@ void matting(ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu, 
 
     std::cout << "Fazendo tchapeu" << std::endl;
     arma::mat tchapeu(total_pixels,1);
+    for (int i = 0; i < total_pixels; i++) {
+        tchapeu(i,0) = image_tchapeu->GetPixel({mapa.at(i).first, mapa.at(i).second}) * lambda;
+    }
+    /*
     unsigned int c=0;
     auto *ptr = image_tchapeu->GetBufferPointer();
     while (c < total_pixels) {
         tchapeu(c,0) = *(ptr+c) * lambda;
         c++;
+    }
+    */
+
+    if (DEBUG) {
+        std::cout << "Salvando tchapeu em TXT" << std::endl;
+        std::fstream fs;
+        fs.open("tchapeu.txt", std::fstream::out);
+        for (int i=0; i<total_pixels; i++) {
+            fs << tchapeu(i,0) << "\n";
+        }
+        fs.close();
     }
 
     std::cout << "tchapeu: " << tchapeu(0,0) << " " << tchapeu(1,0) << " " << tchapeu(2,0) << std::endl;
@@ -386,12 +461,20 @@ void matting(ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu, 
     std::cout << "t: " << t(0,0) << " " << t(1,0) << " " << t(2,0) << std::endl;
 
     std::cout << "Fazendo t" << std::endl;
+
+
+    for (int i = 0; i < total_pixels; i++) {
+        image_t->SetPixel({mapa.at(i).first, mapa.at(i).second}, t(i,0));
+    }
+
+    /*
     c = 0;
     ptr = image_t->GetBufferPointer();
     while (c < total_pixels) {
         *(ptr+c) = t(c,0);
         c++;
     }
+    */
 
     std::cout << " feito" << std::endl;
 //    L.print(std::cout);
@@ -433,30 +516,29 @@ double Lij(ImageType::Pointer image_in, int ix, int iy, int jx, int jy, std::map
     }
     double retorno = 0.0;
 
-//    std::cout << " ix = " << ix << " jx = " << jx << " iy = " << iy << " jy = " << jy << std::endl;
+//    std::cout << "LIJ ix = " << ix << " iy = " << iy << " jx = " << jx << " jy = " << jy << " size: " << size[0] << "x" << size[1] << std::endl;
 
     /*     ix e iy   sao as coordenadas do ponto I_i
      *     jx e jy   sao as coordenadas do ponto I_j
      *     x e y sao as coordenadas da janela W
      */
-    for (int x=ix-2; x<=jx+2; x++) {
-        for (int y=iy-2; y<=jy+2; y++) {
+    for (int x=std::max(ix-2,0); x<std::min(jx+3,(int) size[0]); x++) {
+        for (int y=std::max(iy-2,0); y<std::min(jy+3, (int) size[1]); y++) {
 //            std::cout << "Janela: x = " << x << " ix = " << ix << " jx = " << jx << "   y = " << y << " iy = " << iy << " jy = " << jy << std::endl;
 //            std::cout << "Testando ponto " << x << "," << y << std::endl;
-            if ( abs(x-ix)<=2 && abs(y-iy)<=2 && abs(x-jx)<=2 && abs(y-jy)<=2   && 
-                 x > 0 && y > 0 && x < size[0] && y < size[1] 
-                    ) {
+            if ( checaDistancia(x,y,ix,iy,2) && checaDistancia(x,y,jx,jy,2)) {
 //                std::cout << "Janela em  " << x << "," << y << "  contem os dois pontos" << std::endl;
+                int pos = mapa_inv[{x,y}];
 
-                arma::mat tmp = I_i - Wmean.at(x+y*size[0]);
+                arma::mat tmp = I_i - Wmean.at(pos);
 //                                tmp.print(std::cout, "TMP");
-                arma::mat tmp2 = Wcov.at(x+y*size[0]) + (epsilon/(double)wk)*arma::eye(3,3);
-//                                tmp2.print(std::cout, "TMP2");
-                arma::mat tmp3 = I_j-Wmean.at(x+y*size[0]);
-//                                tmp3.print(std::cout, "TMP3");
+                arma::mat tmp2 = Wcov.at(pos) + (epsilon/(double)wk)*arma::eye(3,3);
+ //                               tmp2.print(std::cout, "TMP2");
+                arma::mat tmp3 = I_j - Wmean.at(pos);
+  //                              tmp3.print(std::cout, "TMP3");
                 arma::mat ltmp = tmp.t() * arma::inv(tmp2) * tmp3;
-//                                ltmp.print(std::cout, "Ltmp");
-                retorno += ( (ix==jx && iy==jy ? 1.0 : 0.0) - (1.0/(double) wk)*(1+ltmp(0,0)));
+   //                             ltmp.print(std::cout, "Ltmp");
+                retorno += ( -1.0/(double) wk)*(1+ltmp(0,0));
 
             }
         }
@@ -533,3 +615,135 @@ double laplacian(ImageType::Pointer image_in, unsigned int ix, unsigned int iy, 
 
 
 
+void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu, ImageGrayType::Pointer image_t) {
+
+    ImageType::SizeType size;
+    size = image_in->GetLargestPossibleRegion().GetSize();
+    long int total_pixels = size[0]*size[1];
+    std::cout << "matting2: " << size[0] << "x" << size[1] << std::endl;
+    arma::sp_mat L(total_pixels, total_pixels);
+
+    std::cout << "Fazendo L..." << std::endl;
+    for (int i=0; i < total_pixels; i++) {
+        if (i % 100 == 0) std::cout << "   -> " << i << " de " << total_pixels << std::endl;
+        for (int j=i; j < total_pixels; j++) {
+            double tmp = matting_L (image_in, i, j);
+            if (!std::isnan(tmp)) {
+                L(j,i) = L(i,j) = tmp;
+            }
+        }
+    }
+    
+    std::cout << "Somando Lambda..." << std::endl;
+    for (int i=0; i < total_pixels; i++) L(i,i) += lambda;
+
+    std::cout << "Fazendo Mtchapeu..." << std::endl;
+    arma::mat Mtchapeu(total_pixels,1);
+    {
+        auto *ptr = image_tchapeu->GetBufferPointer();
+        unsigned int c = 0;
+        while (c < total_pixels) {
+            Mtchapeu(c,0) = *(ptr+c)*lambda;
+            c++;
+        }
+    }
+    std::cout << "Fazendo Mt..." << std::endl;
+    arma::mat Mt = arma::spsolve(L,Mtchapeu);
+    std::cout << "Fazendo t..." << std::endl;
+    {
+        auto *ptr = image_t->GetBufferPointer();
+        unsigned int c = 0;
+        while (c < total_pixels) {
+            *(ptr+c) = Mt(c,0);
+            c++;
+        }
+    }
+}
+
+double matting_L (ImageType::Pointer image, int i, int j) {
+    ImageType::SizeType size;
+    size = image->GetLargestPossibleRegion().GetSize();
+    std::vector<int> Ws = achaJanelas (i, j, size);
+    if (Ws.size() == 0) return std::numeric_limits<double>::quiet_NaN();
+    double soma = 0.0;
+    for (auto &w : Ws) {
+        soma += calculaL (image, i, j, w);
+    }
+    return soma;
+}
+
+std::vector<int> achaJanelas (int i, int j, ImageType::SizeType size) {
+    int ix = mapa[i].first,
+        iy = mapa[i].second,
+        jx = mapa[j].first,
+        jy = mapa[j].second;
+    std::vector<int> ws;
+
+    if (abs(ix-jx) < 3 && abs(iy-jy) < 3) {
+        for (int x = 0; x < size[0]; x++) {
+            for (int y = 0; y < size[1]; y++) {
+                if (    abs(x-ix) < 2 &&
+                        abs(x-jx) < 2 &&
+                        abs(y-iy) < 2 &&
+                        abs(y-jy) < 2) {
+                    ws.push_back(mapa_inv[{x,y}]);
+                }
+            }
+        }
+    }
+    return ws;
+}
+
+arma::mat carregaJanela (ImageType::Pointer image, int w) {
+    int x = mapa[w].first, y = mapa[w].second;
+    arma::mat W(9,3);
+    ImageType::SizeType size;
+    size = image->GetLargestPossibleRegion().GetSize();
+    unsigned int c = 0;
+    for (int i = x-1; i <= x+1; i++) {
+        for (int j = y-1; j <= y+1; j++) {
+            int px = i, py = j;
+            if (px < 0) px = 0;
+             else if (px >= size[0]) px = size[0]-1;
+            if (py < 0) py = 0;
+             else if (py >= size[1]) py = size[1]-1;
+            auto pixel = image->GetPixel({px, py});
+            W(c,0) = pixel[0];
+            W(c,1) = pixel[1];
+            W(c,2) = pixel[2];
+            c++;
+            if (DEBUG) {
+                std::cout << "carregaJanela: (" << i << "," << j << ")->pixel(" << px << "," << py << ") = " << pixel[0] << " " << pixel[1] << " " << pixel[2] << std::endl;
+
+            }
+        }
+    }
+    return W;
+}
+
+double calculaL (ImageType::Pointer image, int i, int j, int w) {
+    using namespace std;
+    if (DEBUG) std::cout << "calculaL i=" << i << " j=" << j << " w=" << w << std::endl;
+    double resultado = (i==j) ? 1.0 : 0.0;
+    auto pixelI = image->GetPixel({mapa[i].first, mapa[i].second});
+    auto pixelJ = image->GetPixel({mapa[j].first, mapa[j].second});
+    arma::mat Ii, Ij;
+    Ii << pixelI[0] << arma::endr << pixelI[1] << arma::endr << pixelI[2];
+    Ij << pixelJ[0] << arma::endr << pixelJ[1] << arma::endr << pixelJ[2];
+    arma::mat W = carregaJanela(image, w);
+    arma::mat Wmean = arma::mean(W);
+    arma::mat Wcov = arma::cov(W);
+
+    if (DEBUG) {
+        Ii.print(cout, "Ii");
+        Ij.print(cout, "Ij");
+        W.print(cout, "W");
+        Wmean.print(cout, "Wmean");
+        Wcov.print(cout, "Wcov");
+    }
+
+    arma::mat tmp = (Ii - Wmean.t()).t() * arma::inv ( Wcov + (epsilon/wk)*arma::eye(3,3)) * (Ij - Wmean.t());
+    if (DEBUG) tmp.print(cout, "tmp");
+    resultado -= (1/wk)*(1+tmp(0,0));
+    return resultado;
+}
