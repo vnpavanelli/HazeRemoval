@@ -9,6 +9,7 @@
 #include <cmath>
 #include <limits>
 #include <math.h>
+#include <tuple>
  
   typedef float PixelComponent;
   typedef itk::RGBPixel< PixelComponent >    PixelType;
@@ -21,6 +22,7 @@
   const double wk = 9;
 
   const bool DEBUG = false;
+  unsigned int largura = 0, altura = 0;
 
     std::map<unsigned int, std::pair<unsigned int, unsigned int>> mapa;
     std::map<std::pair<unsigned int, unsigned int>, unsigned int> mapa_inv;
@@ -48,8 +50,30 @@ std::vector<int> achaJanelas (int i, int j, ImageType::SizeType size);
 double matting_L (ImageType::Pointer image, int i, int j);
 arma::mat carregaJanela (ImageType::Pointer image, int w);
 
+inline int ConverteXY2I (int, int);
+inline std::pair<int, int> ConverteI2XY (int);
+inline ImageType::IndexType ConverteI2Index (int);
+
 
 void uchar2float(typename ImageType::Pointer image, typename ImageType::Pointer image_in);
+
+int ConverteXY2I (int x, int y) {
+    return (y*largura + x);
+}
+
+std::pair<int, int> ConverteI2XY (int i) {
+    int x,y;
+    y = i/largura;
+    x = i % largura;
+    return {x,y};
+}
+
+ImageType::IndexType ConverteI2Index (int i) {
+    int x,y;
+    y = i/largura;
+    x = i % largura;
+    return {x,y};
+}
  
 int main(int argc, char *argv[])
 {
@@ -89,6 +113,8 @@ int main(int argc, char *argv[])
 
 
   std::cout << "Image dimensions: " << size[0] << " x " << size[1] << std::endl;
+  largura = size[0]; 
+  altura = size[1];
 
 
 
@@ -625,16 +651,20 @@ void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu
     std::cout << "Fazendo L..." << std::endl;
     for (int i=0; i < total_pixels; i++) {
         if (i % 100 == 0) std::cout << "   -> " << i << " de " << total_pixels << std::endl;
-        for (int j=i; j < total_pixels; j++) {
+        double soma = 0.0;
+        for (int j=0; j < i; j++) soma += L(i,j);
+        for (int j=i+1; j < total_pixels; j++) {
             double tmp = matting_L (image_in, i, j);
             if (!std::isnan(tmp)) {
                 L(j,i) = L(i,j) = tmp;
+                soma += tmp;
             }
         }
+        L(i,i) = -soma;
     }
 
     std::cout << "Checando L..." << std::endl;
-    checaL(L);
+//    checaL(L);
     
     std::cout << "Somando Lambda..." << std::endl;
     for (int i=0; i < total_pixels; i++) L(i,i) += lambda;
@@ -676,20 +706,31 @@ double matting_L (ImageType::Pointer image, int i, int j) {
 }
 
 std::vector<int> achaJanelas (int i, int j, ImageType::SizeType size) {
+    int ix, iy, jx, jy;
+    std::tie(ix,iy) = ConverteI2XY(i);
+    std::tie(jx,jy) = ConverteI2XY(j);
+    /*
     int ix = mapa[i].first,
         iy = mapa[i].second,
         jx = mapa[j].first,
         jy = mapa[j].second;
+    */
     std::vector<int> ws;
+    int xmin = std::min(ix,jx)-2,
+        xmax = std::max(ix,jx)+2,
+        ymin = std::min(iy,jy)-2,
+        ymax = std::max(iy,jy)+2;
+    
 
     if (abs(ix-jx) < 3 && abs(iy-jy) < 3) {
-        for (int x = 0; x < size[0]; x++) {
-            for (int y = 0; y < size[1]; y++) {
+        for (int x = xmin; x <= xmax; x++) {
+            for (int y = ymin; y <= ymax; y++) {
                 if (    abs(x-ix) < 2 &&
                         abs(x-jx) < 2 &&
                         abs(y-iy) < 2 &&
                         abs(y-jy) < 2) {
-                    ws.push_back(mapa_inv[{x,y}]);
+                    //ws.push_back(mapa_inv[{x,y}]);
+                    ws.push_back(ConverteXY2I(x,y));
                 }
             }
         }
@@ -698,7 +739,9 @@ std::vector<int> achaJanelas (int i, int j, ImageType::SizeType size) {
 }
 
 arma::mat carregaJanela (ImageType::Pointer image, int w) {
-    int x = mapa[w].first, y = mapa[w].second;
+    int x,y;
+    std::tie(x,y) = ConverteI2XY(w);
+//    int x = mapa[w].first, y = mapa[w].second;
     arma::mat W(9,3);
     ImageType::SizeType size;
     size = image->GetLargestPossibleRegion().GetSize();
@@ -729,18 +772,22 @@ double calculaL (ImageType::Pointer image, int i, int j, int w) {
     static std::map<int, std::pair<arma::mat, arma::mat>> cache;
     if (DEBUG) std::cout << "calculaL i=" << i << " j=" << j << " w=" << w << std::endl;
     double resultado = (i==j) ? 1.0 : 0.0;
+    /*
     auto pixelI = image->GetPixel({mapa[i].first, mapa[i].second});
     auto pixelJ = image->GetPixel({mapa[j].first, mapa[j].second});
+    */
+    auto pixelI = image->GetPixel(ConverteI2Index(i));
+    auto pixelJ = image->GetPixel(ConverteI2Index(j));
     arma::mat Ii, Ij;
     Ii << pixelI[0] << arma::endr << pixelI[1] << arma::endr << pixelI[2];
     Ij << pixelJ[0] << arma::endr << pixelJ[1] << arma::endr << pixelJ[2];
     arma::mat W, Wmean, Wcov;
-    if (cache.count(w) && 0) {
+    if (cache.count(w)) {
         Wmean = cache[w].first;
         Wcov = cache[w].second;
     } else {
         W = carregaJanela(image, w);
-        Wmean = arma::mean(W);
+        Wmean = arma::mean(W).t();
         Wcov = arma::cov(W);
         cache[w] = {Wmean, Wcov};
     }
@@ -753,8 +800,8 @@ double calculaL (ImageType::Pointer image, int i, int j, int w) {
         Wcov.print(cout, "Wcov");
     }
 
-    arma::mat tmp = (Ii - Wmean.t()).t() * arma::inv ( Wcov + (epsilon/wk)*arma::eye(3,3)) * (Ij - Wmean.t());
+    arma::mat tmp = (Ii - Wmean).t() * arma::inv ( Wcov + (epsilon/wk)*arma::eye(3,3)) * (Ij - Wmean);
     if (DEBUG) tmp.print(cout, "tmp");
-    resultado -= (1/wk)*(1+tmp(0,0));
+    resultado -= (1+tmp(0,0))/wk;
     return resultado;
 }
