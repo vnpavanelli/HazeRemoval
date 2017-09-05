@@ -15,9 +15,10 @@
   typedef itk::Image<PixelType, 2> ImageType;
   typedef itk::Image<PixelComponent, 2> ImageGrayType;
 
-  const double epsilon = 1e-7; //1e-3;
+  const double epsilon = 1e-4; //1e-3;
   const double lambda = 1e-4;
-  const unsigned int wk = 9;
+//  const unsigned int wk = 9;
+  const double wk = 9;
 
   const bool DEBUG = false;
 
@@ -128,10 +129,10 @@ int main(int argc, char *argv[])
   minima (image_ac, image_min);
   dark_channel (image_min, image_dark);
   calculaT (image_dark, image_tchapeu);
-  matting (image_in, image_tchapeu, image_t);
+//  matting (image_in, image_tchapeu, image_t);
   matting2 (image_in, image_tchapeu, image_t2);
 
-  tiraHaze(image_in, image_tchapeu, image_out, pixel_A);
+  tiraHaze(image_in, image_t2, image_out, pixel_A);
 
   std::cout << "Exibindo imagens" << std::endl;
 
@@ -285,11 +286,9 @@ void tiraHaze(ImageType::Pointer image_in, ImageGrayType::Pointer image_dark, Im
           pixelout[0] = (pixel[0] - A[0])/t + A[0]; 
           pixelout[1] = (pixel[1] - A[1])/t + A[1]; 
           pixelout[2] = (pixel[2] - A[2])/t + A[2]; 
-          /*
-          std::cout << " -> (" << i << "," << j << ") t: " << (int) t << " pixel0: " << (int) pixel[0] << " pixelout0: " << (int) pixelout[0] 
-               << "P-A:" << (int) pixel[0]-A << " P-A/t: " <<(int)  (pixel[0]-A)/t
+          std::cout << " -> (" << i << "," << j << ") t: " << (double) t << " tx: " << t_dark <<  " pixel0: " << (double) pixel[0] << " pixelout0: " << (double) pixelout[0] 
+               << " P-A:" << (double) pixel[0]-A[0] << " P-A/t: " <<(double)  (pixel[0]-A[0])/t
               << std::endl;
-              */
           image_out->SetPixel({i,j}, pixelout);
       }
   }
@@ -331,8 +330,8 @@ void checaL (arma::sp_mat &L) {
             }
         }
         soma *= -1.0;
-        if (abs(L(i,i)-soma) < 1e-6) cout << "L(" << i << "," << i << ") = " << L(i,i) << " != " << soma << endl;
-        //L(i,i) = soma;
+        if (abs(L(i,i)-soma) > 1e-6) cout << "L(" << i << "," << i << ") = " << L(i,i) << " != " << soma << endl;
+        L(i,i) = soma;
     }
 }
 
@@ -633,6 +632,9 @@ void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu
             }
         }
     }
+
+    std::cout << "Checando L..." << std::endl;
+    checaL(L);
     
     std::cout << "Somando Lambda..." << std::endl;
     for (int i=0; i < total_pixels; i++) L(i,i) += lambda;
@@ -655,6 +657,7 @@ void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu
         unsigned int c = 0;
         while (c < total_pixels) {
             *(ptr+c) = Mt(c,0);
+            std::cout << "  -> t(" << c << ") = " << Mt(c,0) << "    tchapeu = " << Mtchapeu(c,0) << std::endl;
             c++;
         }
     }
@@ -723,6 +726,7 @@ arma::mat carregaJanela (ImageType::Pointer image, int w) {
 
 double calculaL (ImageType::Pointer image, int i, int j, int w) {
     using namespace std;
+    static std::map<int, std::pair<arma::mat, arma::mat>> cache;
     if (DEBUG) std::cout << "calculaL i=" << i << " j=" << j << " w=" << w << std::endl;
     double resultado = (i==j) ? 1.0 : 0.0;
     auto pixelI = image->GetPixel({mapa[i].first, mapa[i].second});
@@ -730,9 +734,16 @@ double calculaL (ImageType::Pointer image, int i, int j, int w) {
     arma::mat Ii, Ij;
     Ii << pixelI[0] << arma::endr << pixelI[1] << arma::endr << pixelI[2];
     Ij << pixelJ[0] << arma::endr << pixelJ[1] << arma::endr << pixelJ[2];
-    arma::mat W = carregaJanela(image, w);
-    arma::mat Wmean = arma::mean(W);
-    arma::mat Wcov = arma::cov(W);
+    arma::mat W, Wmean, Wcov;
+    if (cache.count(w) && 0) {
+        Wmean = cache[w].first;
+        Wcov = cache[w].second;
+    } else {
+        W = carregaJanela(image, w);
+        Wmean = arma::mean(W);
+        Wcov = arma::cov(W);
+        cache[w] = {Wmean, Wcov};
+    }
 
     if (DEBUG) {
         Ii.print(cout, "Ii");
