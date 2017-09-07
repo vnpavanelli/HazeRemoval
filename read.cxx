@@ -3,6 +3,7 @@
 #include "itkImageFileWriter.h"
 #include "itkCastImageFilter.h"
 #include "QuickView.h"
+#define ARMA_NO_DEBUG
 #include <armadillo>
 #include <stdlib.h>
 #include <itkNeighborhood.h>
@@ -25,10 +26,10 @@
   typedef itk::Image<PixelType, 2> ImageType;
   typedef itk::Image<PixelComponent, 2> ImageGrayType;
 
-  double epsilon = 1e-3; //1e-3;
+  double epsilon = 1e-4; //1e-3;
   double lambda = 1e-4;
 //  const unsigned int wk = 9;
-  const double wk = 9;
+  const double wk = 9.0;
 
   const bool DEBUG = false;
   const bool VERBOSE = false;
@@ -39,6 +40,11 @@
 
     std::map<unsigned int, std::pair<unsigned int, unsigned int>> mapa;
     std::map<std::pair<unsigned int, unsigned int>, unsigned int> mapa_inv;
+
+    struct Cache {
+        arma::mat cov_inv;
+        arma::mat mean;
+    };
 
 
 template<typename TImageType>
@@ -62,10 +68,11 @@ bool checaDistancia (int, int, int, int, unsigned int distancia=3);
 bool checaDistancia (int, int, unsigned int distancia=3);
 
 
-double calculaL (ImageType::Pointer image, int i, int j, int w);
+double calculaL (ImageType::Pointer image, int i, int j, int w, std::vector<Cache> const &cache);
 std::vector<int> achaJanelas (int i, int j);
-double matting_L (ImageType::Pointer image, int i, int j);
+double matting_L (ImageType::Pointer image, int i, int j, std::vector<Cache> const &cache);
 arma::mat carregaJanela (ImageType::Pointer image, int w);
+void thread_L(ImageType::Pointer image, int i, int total_pixels, arma::sp_mat &L, std::mutex &mtx, std::vector<Cache> const &cache);
 
 inline int ConverteXY2I (int, int);
 inline std::pair<int, int> ConverteI2XY (int);
@@ -303,6 +310,30 @@ std::vector<double> achaA(typename ImageGrayType::Pointer image_dark, typename I
   std::cout << "0.1%: " << porcento01 << std::endl;
   std::vector<double> pixel_A;
   pixel_A.resize(3);
+
+  std::vector<std::pair<double, unsigned int>> pixels;
+  pixels.reserve(total_pixels);
+  int c = 0;
+  PixelComponent *ptr = image_dark->GetBufferPointer();
+  while (c < total_pixels) {
+      pixels[c] = { *(ptr+c), c };
+      c++;
+  }
+  std::sort(pixels.begin(), pixels.end(), [] (std::pair<double, unsigned int> const &a, std::pair<double, unsigned int> const &b) { return a.first < b.first; });
+  PixelType *ptr2 = image_in->GetBufferPointer();
+  for (int i = 0; i < porcento01; i++) {
+      PixelType *pixel = ptr2+pixels[i].second;
+      if (VERBOSE || 1) {
+          std::cout << " -> pixel: " << pixels[i].first << " (" << i << "/" << porcento01 << ")" << std::endl;
+          std::cout << "    -> ( " << (*pixel)[0] << " , " << (*pixel)[1] << " , " << (*pixel)[2] << " )" << std::endl;
+      }
+                  pixel_A[0] = std::max(pixel_A[0], (double) (*pixel)[0]);
+                  pixel_A[1] = std::max(pixel_A[1], (double) (*pixel)[1]);
+                  pixel_A[2] = std::max(pixel_A[2], (double) (*pixel)[2]);
+
+  }
+
+  /*
   do {
       for (unsigned int i = 0; i < size[0] && porcento01 > 0; i++) {
           for (unsigned int j = 0; j < size[1] && porcento01 > 0; j++) {
@@ -321,13 +352,13 @@ std::vector<double> achaA(typename ImageGrayType::Pointer image_dark, typename I
       }
       pixel_max-=.01;
   } while (porcento01>0 && pixel_max >0);
+  */
   return pixel_A;
 }
 
 
-void tiraHaze(ImageType::Pointer image_in, ImageGrayType::Pointer image_dark, ImageType::Pointer image_out, std::vector<double> pixel_A) {
-  auto& A = pixel_A;
-  PixelComponent t_max = 0.1;
+void tiraHaze(ImageType::Pointer image_in, ImageGrayType::Pointer image_dark, ImageType::Pointer image_out, std::vector<double> A) {
+  const PixelComponent t_max = 0.1;
   for (unsigned int i = 0; i < size[0]; i++) {
       for (unsigned int j = 0; j < size[1]; j++) {
           PixelType pixel = image_in->GetPixel({i,j});
@@ -668,11 +699,11 @@ double laplacian(ImageType::Pointer image_in, unsigned int ix, unsigned int iy, 
     return retorno;
 }
 
-void thread_L(ImageType::Pointer image, int i, int total_pixels, arma::sp_mat &L, std::mutex &mtx) {
+void thread_L(ImageType::Pointer image, int i, int total_pixels, arma::sp_mat &L, std::mutex &mtx, std::vector<Cache> const &cache) {
 //    arma::sp_mat Ltmp(total_pixels, total_pixels);
     std::unordered_map<int, double> Ltmp;
     for (int j=i+1; j < total_pixels; j++) {
-        double tmp = matting_L(image, i, j);
+        double tmp = matting_L(image, i, j, cache);
         if (!std::isnan(tmp)) {
             Ltmp[j] = tmp;
         }
@@ -694,6 +725,21 @@ void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu
     std::cout << "matting2: " << size[0] << "x" << size[1] << std::endl;
     arma::sp_mat L(total_pixels, total_pixels);
 
+    std::vector<Cache> cache;
+    cache.reserve(total_pixels);
+
+
+    std::cout << "Fazendo cache..." << std::flush;
+    for (int w=0; w<total_pixels; w++) {
+        Cache tmp;
+        arma::mat W(carregaJanela(image_in, w));
+        tmp.mean = arma::mean(W).t();
+        arma::mat Wcov(W.t()*W/wk - tmp.mean*tmp.mean.t());
+        tmp.cov_inv = arma::inv(Wcov + (epsilon/wk)*arma::eye(3,3));
+        cache[w] = tmp;
+    }
+    std::cout << " feito" << std::endl;
+
     boost::asio::io_service _io;
     std::unique_ptr<boost::asio::io_service::work> _work(
                 new boost::asio::io_service::work(_io));
@@ -709,7 +755,7 @@ void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu
         if (i % 100 == 0) std::cout << "   -> " << i << " de " << total_pixels << std::endl;
 //        for (int j=i+1; j < total_pixels; j++) {
 //            std::cout << "      -> Posting L(" << i << ")" << std::flush;
-            _io.post(boost::bind(&thread_L, image_in, i, total_pixels, boost::ref(L), boost::ref(mtx)));
+            _io.post(boost::bind(&thread_L, image_in, i, total_pixels, boost::ref(L), boost::ref(mtx), boost::ref(cache)));
             posts++;
 //            std::cout << " done" << std::endl;
             /*
@@ -767,22 +813,30 @@ void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu
     arma::mat Mt = arma::spsolve(L,Mtchapeu);
     std::cout << "Fazendo t..." << std::endl;
     {
+        double tmin=Mt(0,0), tmax=Mt(0,0);
         auto *ptr = image_t->GetBufferPointer();
         unsigned int c = 0;
         while (c < total_pixels) {
             *(ptr+c) = Mt(c,0);
             if (DEBUG || VERBOSE) std::cout << "  -> t(" << c << ") = " << Mt(c,0) << "    tchapeu = " << Mtchapeu(c,0) << std::endl;
+            if (Mt(c,0) > tmax) tmax = Mt(c,0);
+            if (Mt(c,0) < tmin) tmin = Mt(c,0);
             c++;
         }
+        std::cout << "*******************************************************" << std::endl;
+        std::cout << "*******************************************************" << std::endl;
+        std::cout << "tmin = " << tmin << "  tmax = " << tmax << std::endl;
+        std::cout << "*******************************************************" << std::endl;
+        std::cout << "*******************************************************" << std::endl;
     }
 }
 
-double matting_L (ImageType::Pointer image, int i, int j) {
+double matting_L (ImageType::Pointer image, int i, int j, std::vector<Cache> const &cache) {
     std::vector<int> Ws(achaJanelas (i, j));
     if (Ws.size() == 0) return std::numeric_limits<double>::quiet_NaN();
     double soma = 0.0;
     for (auto &w : Ws) {
-        soma += calculaL (image, i, j, w);
+        soma += calculaL (image, i, j, w, cache);
     }
     return soma;
 }
@@ -853,42 +907,21 @@ arma::mat carregaJanela (ImageType::Pointer image, int w) {
     return W;
 }
 
-double calculaL (ImageType::Pointer image, int i, int j, int w) {
+double calculaL (ImageType::Pointer image, int i, int j, int w, std::vector<Cache> const &cache) {
     using namespace std;
-//    static std::map<int, std::pair<arma::mat, arma::mat>> cache;
     if (DEBUG) std::cout << "calculaL i=" << i << " j=" << j << " w=" << w << std::endl;
     double resultado = (i==j) ? 1.0 : 0.0;
-    /*
-    auto pixelI = image->GetPixel({mapa[i].first, mapa[i].second});
-    auto pixelJ = image->GetPixel({mapa[j].first, mapa[j].second});
-    */
     auto pixelI = image->GetPixel(ConverteI2Index(i));
     auto pixelJ = image->GetPixel(ConverteI2Index(j));
     arma::mat Ii, Ij;
     Ii << pixelI[0] << arma::endr << pixelI[1] << arma::endr << pixelI[2];
     Ij << pixelJ[0] << arma::endr << pixelJ[1] << arma::endr << pixelJ[2];
-//    arma::mat W, Wmean, Wcov;
-    /*
-    if (cache.count(w)) {
-        Wmean = cache[w].first;
-        Wcov = cache[w].second;
-    } else {
-    */
-    arma::mat W(carregaJanela(image, w));
-    arma::mat Wmean(arma::mean(W).t());
-    arma::mat Wcov(arma::cov(W));
-    //    cache[w] = {Wmean, Wcov};
-    //}
-
     if (DEBUG) {
         Ii.print(cout, "Ii");
         Ij.print(cout, "Ij");
-        W.print(cout, "W");
-        Wmean.print(cout, "Wmean");
-        Wcov.print(cout, "Wcov");
     }
 
-    arma::mat tmp = (Ii - Wmean).t() * arma::inv ( Wcov + (epsilon/wk)*arma::eye(3,3)) * (Ij - Wmean);
+    arma::mat tmp = (Ii - cache[w].mean).t() * cache[w].cov_inv * (Ij - cache[w].mean);
     if (DEBUG) tmp.print(cout, "tmp");
     resultado -= (1+tmp(0,0))/wk;
     return resultado;
