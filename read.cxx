@@ -24,13 +24,13 @@
   typedef itk::Image<PixelType, 2> ImageType;
   typedef itk::Image<PixelComponent, 2> ImageGrayType;
 
-  const double epsilon = 1e-3; //1e-3;
-  const double lambda = 1e-4;
+  double epsilon = 1e1; //1e-3;
+  double lambda = 1e-5;
 //  const unsigned int wk = 9;
   const double wk = 9;
 
   const bool DEBUG = false;
-  const bool VERBOSE = true;
+  const bool VERBOSE = false;
   const unsigned int THREADS = 16;
   unsigned int largura = 0, altura = 0;
   std::atomic_int posts;
@@ -98,6 +98,10 @@ int main(int argc, char *argv[])
  
     return EXIT_FAILURE;
     }
+  if (argc > 2) {
+      lambda = atof(argv[2]);
+      epsilon = atof(argv[3]);
+  }
   std::string inputFilename = argv[1];
  
 
