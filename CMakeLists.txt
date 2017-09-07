@@ -14,7 +14,8 @@ if (ITKVtkGlue_LOADED)
 endif()
 find_package(SUPERLU REQUIRED)
 find_package(Armadillo REQUIRED)
+find_package(Boost COMPONENTS system thread REQUIRED)
  
 add_executable(haze MACOSX_BUNDLE read.cxx)
  
-target_link_libraries(haze ${ITK_LIBRARIES} ${ARMADILLO_LIBRARIES})
+target_link_libraries(haze ${ITK_LIBRARIES} ${ARMADILLO_LIBRARIES} ${Boost_LIBRARIES})

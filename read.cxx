@@ -1,5 +1,6 @@
 #include "itkImage.h"
 #include "itkImageFileReader.h"
+#include "itkImageFileWriter.h"
 #include "itkCastImageFilter.h"
 #include "QuickView.h"
 #include <armadillo>
@@ -10,19 +11,29 @@
 #include <limits>
 #include <math.h>
 #include <tuple>
+#include <mutex>
+#include <atomic>
+
+#include <boost/asio.hpp>
+#include <boost/thread.hpp>
+#include <boost/bind.hpp>
+#include <boost/smart_ptr.hpp>
  
   typedef float PixelComponent;
   typedef itk::RGBPixel< PixelComponent >    PixelType;
   typedef itk::Image<PixelType, 2> ImageType;
   typedef itk::Image<PixelComponent, 2> ImageGrayType;
 
-  const double epsilon = 1e-4; //1e-3;
+  const double epsilon = 1e-3; //1e-3;
   const double lambda = 1e-4;
 //  const unsigned int wk = 9;
   const double wk = 9;
 
   const bool DEBUG = false;
+  const bool VERBOSE = true;
+  const unsigned int THREADS = 16;
   unsigned int largura = 0, altura = 0;
+  std::atomic_int posts;
 
     std::map<unsigned int, std::pair<unsigned int, unsigned int>> mapa;
     std::map<std::pair<unsigned int, unsigned int>, unsigned int> mapa_inv;
@@ -30,6 +41,10 @@
 
 template<typename TImageType>
 static void ReadFile(std::string filename, typename TImageType::Pointer image);
+
+template<typename TImageType>
+static void WriteFile(std::string filename, typename TImageType::Pointer image);
+
 void minima(typename ImageType::Pointer image_in, typename ImageGrayType::Pointer image_min);
 void dark_channel(typename ImageGrayType::Pointer image_min, typename ImageGrayType::Pointer image_dark);
 std::vector<double> achaA(typename ImageGrayType::Pointer image_dark, typename ImageType::Pointer image_in);
@@ -158,7 +173,15 @@ int main(int argc, char *argv[])
 //  matting (image_in, image_tchapeu, image_t);
   matting2 (image_in, image_tchapeu, image_t2);
 
-  tiraHaze(image_in, image_t2, image_out, pixel_A);
+  tiraHaze(image_ac, image_t2, image_out, pixel_A);
+
+  std::cout << "Salvando imagens" << std::endl;
+
+  WriteFile<ImageGrayType>(inputFilename + ".t2.tif", image_t2);
+  WriteFile<ImageGrayType>(inputFilename + ".tchapeu.tif", image_tchapeu);
+  WriteFile<ImageGrayType>(inputFilename + ".dark.tif", image_dark);
+  WriteFile<ImageGrayType>(inputFilename + ".min.tif", image_min);
+  WriteFile<ImageType>(inputFilename + ".out.tif", image_out);
 
   std::cout << "Exibindo imagens" << std::endl;
 
@@ -174,6 +197,19 @@ int main(int argc, char *argv[])
 
   return EXIT_SUCCESS;
 }
+
+template<typename TImageType>
+void WriteFile(std::string filename, typename TImageType::Pointer image)
+{
+    std::cout << "Salvando imagem em " << filename << std::endl;
+    typedef  itk::ImageFileWriter< TImageType  > WriterType;
+    typename WriterType::Pointer writer = WriterType::New();
+    writer->SetFileName(filename);
+    writer->SetInput(image);
+    writer->Update();
+}
+
+
  
 template<typename TImageType>
 void ReadFile(std::string filename, typename TImageType::Pointer image)
@@ -278,10 +314,9 @@ std::vector<double> achaA(typename ImageGrayType::Pointer image_dark, typename I
           for (unsigned int j = 0; j < size[1] && porcento01 > 0; j++) {
               auto pixel = image_dark->GetPixel({i,j});
               if (pixel >= pixel_max) {
-                  /*
-                  std::cout << " -> pixel: " << pixel << " >= " << pixel_max << "   porcento01:" << porcento01 << std::endl;
-                  std::cout << "    Luminance: " << image->GetPixel({i,j}).GetLuminance() << std::endl;
-                  */
+                  if (VERBOSE) {
+                      std::cout << " -> pixel: " << pixel << " >= " << pixel_max << "   porcento01:" << porcento01 << std::endl;
+                  }
                   porcento01--;
                   auto pixel = image_in->GetPixel({i,j});
                   pixel_A[0] = std::max(pixel_A[0], (double) pixel[0]);
@@ -309,12 +344,14 @@ void tiraHaze(ImageType::Pointer image_in, ImageGrayType::Pointer image_dark, Im
           //PixelComponent t_dark = 1.0-0.95*(image_dark->GetPixel({i,j}));
           PixelComponent t_dark = image_dark->GetPixel({i,j});
           double t = std::max(t_max,t_dark);
-          pixelout[0] = (pixel[0] - A[0])/t + A[0]; 
-          pixelout[1] = (pixel[1] - A[1])/t + A[1]; 
-          pixelout[2] = (pixel[2] - A[2])/t + A[2]; 
-          if (DEBUG) {
+          pixelout[0] = std::min(1.0, std::max(0.0, ((double) pixel[0] - A[0])/t + A[0] )); 
+          pixelout[1] = std::min(1.0, std::max(0.0, ((double) pixel[1] - A[1])/t + A[1] )); 
+          pixelout[2] = std::min(1.0, std::max(0.0, ((double) pixel[2] - A[2])/t + A[2] )); 
+          if (DEBUG || VERBOSE) {
           std::cout << " -> (" << i << "," << j << ") t: " << (double) t << " tx: " << t_dark <<  " pixel0: " << (double) pixel[0] << " pixelout0: " << (double) pixelout[0] 
-               << " P-A:" << (double) pixel[0]-A[0] << " P-A/t: " <<(double)  (pixel[0]-A[0])/t
+                    << " pixel1: " << (double) pixel[1] << " pixelout1: " << (double) pixelout[1]
+                    << " pixel2: " << (double) pixel[2] << " pixelout2: " << (double) pixelout[2]
+//               << " P-A:" << (double) pixel[0]-A[0] << " P-A/t: " <<(double)  (pixel[0]-A[0])/t
               << std::endl;
           }
           image_out->SetPixel({i,j}, pixelout);
@@ -325,13 +362,24 @@ void tiraHaze(ImageType::Pointer image_in, ImageGrayType::Pointer image_dark, Im
 void corrigeA(ImageType::Pointer image_in, ImageType::Pointer image_ac, std::vector<double> A) {
   ImageType::SizeType size;
   size = image_in->GetLargestPossibleRegion().GetSize();
+  if (VERBOSE) std::cout << "corrigeA Iniciando" << std::endl;
 
   for (unsigned int i = 0; i < size[0]; i++) {
       for (unsigned int j = 0; j < size[1]; j++) {
           auto pixel = image_in->GetPixel({i,j});
-          pixel[0] /= A[0];
-          pixel[1] /= A[1];
-          pixel[2] /= A[2];
+          std::vector<double> pixel2;
+          pixel2.resize(3);
+          if (VERBOSE) {
+              std::cout << " Pixel (" << i << "," << j << "): ( " << pixel[0] << " , " << pixel[1] << " , " << pixel[2]
+                  << " ) => ( " << pixel[0]/A[0] << " , " << pixel[1]/A[1] << " , " << pixel[2]/A[2] << " ) " << std::endl;
+          }
+          pixel2[0] = pixel[0] / A[0];
+          pixel2[1] = pixel[1] / A[1];
+          pixel2[2] = pixel[2] / A[2];
+          if (VERBOSE) if (pixel[0] >= 1 || pixel[1] >= 1 || pixel[2] >= 1) std::cout << "*********************************************" << std::endl;
+          pixel[0] = std::min(1.0, std::max(0.0, pixel2[0]));
+          pixel[1] = std::min(1.0, std::max(0.0, pixel2[1]));
+          pixel[2] = std::min(1.0, std::max(0.0, pixel2[2]));
           image_ac->SetPixel({i,j}, pixel);
       }
   }
@@ -470,7 +518,7 @@ void matting(ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu, 
     }
     */
 
-    if (DEBUG) {
+    if (DEBUG || VERBOSE) {
         std::cout << "Salvando tchapeu em TXT" << std::endl;
         std::fstream fs;
         fs.open("tchapeu.txt", std::fstream::out);
@@ -640,6 +688,17 @@ double laplacian(ImageType::Pointer image_in, unsigned int ix, unsigned int iy, 
     return retorno;
 }
 
+void thread_L(ImageType::Pointer image, int i, int total_pixels, arma::sp_mat &L, std::mutex &mtx) {
+    for (int j=i+1; j < total_pixels; j++) {
+        double tmp = matting_L(image, i, j);
+        if (!std::isnan(tmp)) {
+            std::lock_guard<std::mutex> guard(mtx);
+            L(j,i) = L(i,j) = tmp;
+        }
+    }
+    posts--;
+}
+
 
 
 void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu, ImageGrayType::Pointer image_t) {
@@ -650,20 +709,58 @@ void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu
     std::cout << "matting2: " << size[0] << "x" << size[1] << std::endl;
     arma::sp_mat L(total_pixels, total_pixels);
 
+    boost::asio::io_service _io;
+    std::unique_ptr<boost::asio::io_service::work> _work(
+                new boost::asio::io_service::work(_io));
+    boost::thread_group _threads;
+    for (int i=0; i < THREADS; i++) {
+        _threads.add_thread(new boost::thread(boost::bind(&boost::asio::io_service::run, &_io)));
+    }
+    std::mutex mtx;
+    posts=0;
+
     std::cout << "Fazendo L..." << std::endl;
     for (int i=0; i < total_pixels; i++) {
         if (i % 100 == 0) std::cout << "   -> " << i << " de " << total_pixels << std::endl;
-        double soma = 0.0;
-        for (int j=0; j < i; j++) soma += L(i,j);
-        for (int j=i+1; j < total_pixels; j++) {
+//        for (int j=i+1; j < total_pixels; j++) {
+//            std::cout << "      -> Posting L(" << i << ")" << std::flush;
+            _io.post(boost::bind(&thread_L, image_in, i, total_pixels, boost::ref(L), boost::ref(mtx)));
+            posts++;
+//            std::cout << " done" << std::endl;
+            /*
             double tmp = matting_L (image_in, i, j);
             if (!std::isnan(tmp)) {
                 L(j,i) = L(i,j) = tmp;
                 soma += tmp;
             }
+            */
+//        }
+    }
+
+    std::cout << "All processes posted to threads, joining..." << std::endl;
+    std::cout << "posts: " << posts << std::endl;
+    while (posts>0) {
+        std::cout << "posts: " << posts << std::endl;
+        usleep(1e6);
+    }
+    _work.reset();
+    _threads.join_all();
+    std::cout << "All threads joined" << std::endl;
+
+    {
+        auto Lsum = arma::sum(L,1);
+        L -= diagmat(Lsum);
+    }
+
+    /*
+    for (int i=0; i<total_pixels; i++) {
+        double soma = 0;
+        for (int j=0; j<total_pixels; j++) {
+            if (j!=i) soma+= L(i,j);
         }
         L(i,i) = -soma;
     }
+    */
 
     std::cout << "Checando L..." << std::endl;
 //    checaL(L);
@@ -689,7 +786,7 @@ void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu
         unsigned int c = 0;
         while (c < total_pixels) {
             *(ptr+c) = Mt(c,0);
-            if (DEBUG) std::cout << "  -> t(" << c << ") = " << Mt(c,0) << "    tchapeu = " << Mtchapeu(c,0) << std::endl;
+            if (DEBUG || VERBOSE) std::cout << "  -> t(" << c << ") = " << Mt(c,0) << "    tchapeu = " << Mtchapeu(c,0) << std::endl;
             c++;
         }
     }
