@@ -13,6 +13,7 @@
 #include <tuple>
 #include <mutex>
 #include <atomic>
+#include <unordered_map>
 
 #include <boost/asio.hpp>
 #include <boost/thread.hpp>
@@ -24,15 +25,16 @@
   typedef itk::Image<PixelType, 2> ImageType;
   typedef itk::Image<PixelComponent, 2> ImageGrayType;
 
-  double epsilon = 1e1; //1e-3;
-  double lambda = 1e-5;
+  double epsilon = 1e-3; //1e-3;
+  double lambda = 1e-4;
 //  const unsigned int wk = 9;
   const double wk = 9;
 
   const bool DEBUG = false;
   const bool VERBOSE = false;
-  const unsigned int THREADS = 16;
-  unsigned int largura = 0, altura = 0;
+  const unsigned int THREADS = 8;
+  int largura = 0, altura = 0;
+  ImageGrayType::SizeType size;
   std::atomic_int posts;
 
     std::map<unsigned int, std::pair<unsigned int, unsigned int>> mapa;
@@ -61,7 +63,7 @@ bool checaDistancia (int, int, unsigned int distancia=3);
 
 
 double calculaL (ImageType::Pointer image, int i, int j, int w);
-std::vector<int> achaJanelas (int i, int j, ImageType::SizeType size);
+std::vector<int> achaJanelas (int i, int j);
 double matting_L (ImageType::Pointer image, int i, int j);
 arma::mat carregaJanela (ImageType::Pointer image, int w);
 
@@ -77,10 +79,10 @@ int ConverteXY2I (int x, int y) {
 }
 
 std::pair<int, int> ConverteI2XY (int i) {
-    int x,y;
-    y = i/largura;
-    x = i % largura;
-    return {x,y};
+    std::pair<int,int> par;
+    par.second = i/largura;
+    par.first = i % largura;
+    return par;
 }
 
 ImageType::IndexType ConverteI2Index (int i) {
@@ -119,7 +121,7 @@ int main(int argc, char *argv[])
   
   ImageGrayType::RegionType region;
   ImageGrayType::IndexType start;
-  ImageGrayType::SizeType size;
+//  ImageGrayType::SizeType size;
   start[0] = start[1] = 0;
   size = image->GetLargestPossibleRegion().GetSize();
 
@@ -177,7 +179,7 @@ int main(int argc, char *argv[])
 //  matting (image_in, image_tchapeu, image_t);
   matting2 (image_in, image_tchapeu, image_t2);
 
-  tiraHaze(image_ac, image_t2, image_out, pixel_A);
+  tiraHaze(image_in, image_t2, image_out, pixel_A);
 
   std::cout << "Salvando imagens" << std::endl;
 
@@ -191,9 +193,9 @@ int main(int argc, char *argv[])
 
   QuickView viewer;
   viewer.AddImage(image_in.GetPointer(), true, "in");
-  viewer.AddImage(image_min.GetPointer(), true, "min");
-  viewer.AddImage(image_dark.GetPointer(), true, "dark");
-  viewer.AddImage(image_t.GetPointer(), true, "t");
+//  viewer.AddImage(image_min.GetPointer(), true, "min");
+//  viewer.AddImage(image_dark.GetPointer(), true, "dark");
+//  viewer.AddImage(image_t.GetPointer(), true, "t");
   viewer.AddImage(image_t2.GetPointer(), true, "t2");
   viewer.AddImage(image_tchapeu.GetPointer(), true, "tchapeu");
   viewer.AddImage(image_out.GetPointer(), true, "out");
@@ -229,8 +231,6 @@ void ReadFile(std::string filename, typename TImageType::Pointer image)
 }
 
 void uchar2float(typename ImageType::Pointer image, typename ImageType::Pointer image_in) {
-  ImageType::SizeType size;
-  size = image->GetLargestPossibleRegion().GetSize();
   /* transforma imagem unsigned char em float */
   for (unsigned int i = 0; i < size[0]; i++) {
       for (unsigned int j = 0; j < size[1]; j++) {
@@ -244,9 +244,6 @@ void uchar2float(typename ImageType::Pointer image, typename ImageType::Pointer 
 }
 
 void minima(typename ImageType::Pointer image_in, typename ImageGrayType::Pointer image_min) {
-  ImageType::SizeType size;
-  size = image_in->GetLargestPossibleRegion().GetSize();
-
   std::cout << "Criando imagem minima..." << std::endl;
   /* Criar imagem com minimo dentre os canais RGB */
   for (unsigned int i = 0; i < size[0]; i++) {
@@ -260,8 +257,6 @@ void minima(typename ImageType::Pointer image_in, typename ImageGrayType::Pointe
 
 
 void calculaT(typename ImageGrayType::Pointer image_dark, typename ImageGrayType::Pointer image_t) {
-  ImageType::SizeType size;
-  size = image_dark->GetLargestPossibleRegion().GetSize();
   for (unsigned int i = 0; i < size[0]; i++) {
       for (unsigned int j = 0; j < size[1]; j++) {
           image_t->SetPixel({i,j}, 1.0 - 0.95*image_dark->GetPixel({i,j}));
@@ -271,8 +266,6 @@ void calculaT(typename ImageGrayType::Pointer image_dark, typename ImageGrayType
 }
 
 void dark_channel(typename ImageGrayType::Pointer image_min, typename ImageGrayType::Pointer image_dark) {
-  ImageType::SizeType size;
-  size = image_min->GetLargestPossibleRegion().GetSize();
   const int Patch_window = 7;  // floor(15/2);
 
   std::cout << "Criando Dark Channel..." << std::endl;
@@ -302,9 +295,6 @@ void dark_channel(typename ImageGrayType::Pointer image_min, typename ImageGrayT
 
 
 std::vector<double> achaA(typename ImageGrayType::Pointer image_dark, typename ImageType::Pointer image_in) {
-  ImageType::SizeType size;
-  size = image_in->GetLargestPossibleRegion().GetSize();
-
   std::cout << "Procurando valor de A..." << std::endl;
   unsigned int total_pixels = size[0]*size[1];
   int porcento01 = ceil((double) total_pixels * 0.001);
@@ -336,9 +326,6 @@ std::vector<double> achaA(typename ImageGrayType::Pointer image_dark, typename I
 
 
 void tiraHaze(ImageType::Pointer image_in, ImageGrayType::Pointer image_dark, ImageType::Pointer image_out, std::vector<double> pixel_A) {
-  ImageType::SizeType size;
-  size = image_in->GetLargestPossibleRegion().GetSize();
-
   auto& A = pixel_A;
   PixelComponent t_max = 0.1;
   for (unsigned int i = 0; i < size[0]; i++) {
@@ -364,8 +351,6 @@ void tiraHaze(ImageType::Pointer image_in, ImageGrayType::Pointer image_dark, Im
 }
 
 void corrigeA(ImageType::Pointer image_in, ImageType::Pointer image_ac, std::vector<double> A) {
-  ImageType::SizeType size;
-  size = image_in->GetLargestPossibleRegion().GetSize();
   if (VERBOSE) std::cout << "corrigeA Iniciando" << std::endl;
 
   for (unsigned int i = 0; i < size[0]; i++) {
@@ -427,9 +412,6 @@ bool checaDistancia (int i, int j, unsigned int distancia) {
 }
 
 void matting(ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu, ImageGrayType::Pointer image_t) {
-    ImageType::SizeType size;
-    size = image_in->GetLargestPossibleRegion().GetSize();
-//    size[0] = 4; size[1] = 4;
     unsigned int total_pixels = size[0]*size[1];
     std::cout << "Total pixels: " << total_pixels << std::endl;
 
@@ -562,10 +544,6 @@ void matting(ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu, 
 
 arma::mat achaW (ImageType::Pointer image_in, int x, int y) {
     arma::mat W(9,3);
-    ImageType::SizeType size;
-    size = image_in->GetLargestPossibleRegion().GetSize();
-    int largura = size[0], altura = size[1];
-
     for (int i=0; i<3; i++) {
         for (int j=0; j<3; j++) {
             int px = std::min(std::max(i+x-1,0), largura-1);
@@ -580,8 +558,6 @@ arma::mat achaW (ImageType::Pointer image_in, int x, int y) {
 }
 
 double Lij(ImageType::Pointer image_in, int ix, int iy, int jx, int jy, std::map<unsigned int, arma::mat> const& Wcov, std::map<unsigned int, arma::mat> const& Wmean) {
-    ImageType::SizeType size;
-    size = image_in->GetLargestPossibleRegion().GetSize();
     arma::mat I_i(3,1), I_j(3,1);
     {
         auto Pi = image_in->GetPixel({ix,iy});
@@ -693,11 +669,18 @@ double laplacian(ImageType::Pointer image_in, unsigned int ix, unsigned int iy, 
 }
 
 void thread_L(ImageType::Pointer image, int i, int total_pixels, arma::sp_mat &L, std::mutex &mtx) {
+//    arma::sp_mat Ltmp(total_pixels, total_pixels);
+    std::unordered_map<int, double> Ltmp;
     for (int j=i+1; j < total_pixels; j++) {
         double tmp = matting_L(image, i, j);
         if (!std::isnan(tmp)) {
-            std::lock_guard<std::mutex> guard(mtx);
-            L(j,i) = L(i,j) = tmp;
+            Ltmp[j] = tmp;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> guard(mtx);
+        for (auto &tmp : Ltmp) {
+            L(i,tmp.first) = L(tmp.first,i) = tmp.second;
         }
     }
     posts--;
@@ -707,8 +690,6 @@ void thread_L(ImageType::Pointer image, int i, int total_pixels, arma::sp_mat &L
 
 void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu, ImageGrayType::Pointer image_t) {
 
-    ImageType::SizeType size;
-    size = image_in->GetLargestPossibleRegion().GetSize();
     long int total_pixels = size[0]*size[1];
     std::cout << "matting2: " << size[0] << "x" << size[1] << std::endl;
     arma::sp_mat L(total_pixels, total_pixels);
@@ -797,9 +778,7 @@ void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu
 }
 
 double matting_L (ImageType::Pointer image, int i, int j) {
-    ImageType::SizeType size;
-    size = image->GetLargestPossibleRegion().GetSize();
-    std::vector<int> Ws(achaJanelas (i, j, size));
+    std::vector<int> Ws(achaJanelas (i, j));
     if (Ws.size() == 0) return std::numeric_limits<double>::quiet_NaN();
     double soma = 0.0;
     for (auto &w : Ws) {
@@ -808,31 +787,35 @@ double matting_L (ImageType::Pointer image, int i, int j) {
     return soma;
 }
 
-std::vector<int> achaJanelas (int i, int j, ImageType::SizeType size) {
-    int ix, iy, jx, jy;
-    std::tie(ix,iy) = ConverteI2XY(i);
-    std::tie(jx,jy) = ConverteI2XY(j);
-    /*
-    int ix = mapa[i].first,
-        iy = mapa[i].second,
-        jx = mapa[j].first,
-        jy = mapa[j].second;
-    */
-    std::vector<int> ws;
-    int xmin = std::min(ix,jx)-2,
-        xmax = std::max(ix,jx)+2,
-        ymin = std::min(iy,jy)-2,
-        ymax = std::max(iy,jy)+2;
-    
+std::vector<int> achaJanelas (int i, int j) {
+    //    int ix, iy, jx, jy;
+    //    std::tie(ix,iy) = ConverteI2XY(i);
+    //    std::tie(jx,jy) = ConverteI2XY(j);
 
-    if (abs(ix-jx) < 3 && abs(iy-jy) < 3) {
+
+
+    auto Pi = ConverteI2XY(i);
+    auto Pj = ConverteI2XY(j);
+    /*
+       int ix = mapa[i].first,
+       iy = mapa[i].second,
+       jx = mapa[j].first,
+       jy = mapa[j].second;
+       */
+    std::vector<int> ws;
+
+    if (abs(Pi.first-Pj.first) < 3 && abs(Pi.second-Pj.second) < 3) {
+        int xmin = std::max(std::min(Pi.first,Pj.first)-2,0),
+            xmax = std::min(std::max(Pi.first,Pj.first)+2,largura-1),
+            ymin = std::max(std::min(Pi.second,Pj.second)-2,0),
+            ymax = std::min(std::max(Pi.second,Pj.second)+2,altura-1);
+
         for (int x = xmin; x <= xmax; x++) {
             for (int y = ymin; y <= ymax; y++) {
-                if (    abs(x-ix) < 2 &&
-                        abs(x-jx) < 2 &&
-                        abs(y-iy) < 2 &&
-                        abs(y-jy) < 2) {
-                    //ws.push_back(mapa_inv[{x,y}]);
+                if (    abs(x-Pi.first) < 2 &&
+                        abs(x-Pj.first) < 2 &&
+                        abs(y-Pi.second) < 2 &&
+                        abs(y-Pj.second) < 2) {
                     ws.push_back(ConverteXY2I(x,y));
                 }
             }
