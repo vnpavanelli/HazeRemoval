@@ -45,8 +45,10 @@
     std::map<std::pair<unsigned int, unsigned int>, unsigned int> mapa_inv;
 
     struct Cache {
-        arma::mat cov_inv;
-        arma::mat mean;
+        arma::fmat cov_inv;
+        arma::fmat mean;
+
+        Cache() : mean(3,1), cov_inv(3,3) {};
     };
 
 
@@ -71,20 +73,30 @@ bool checaDistancia (int, int, int, int, unsigned int distancia=3);
 bool checaDistancia (int, int, unsigned int distancia=3);
 
 
+/*
 double calculaL (ImageType::Pointer image, int i, int j, int w, std::vector<Cache> const &cache);
 std::vector<int> achaJanelas (int i, int j);
 double matting_L (ImageType::Pointer image, int i, int j, std::vector<Cache> const &cache);
 arma::mat carregaJanela (ImageType::Pointer image, int w);
 void thread_L(ImageType::Pointer image, int i, int total_pixels, arma::sp_mat &L, std::mutex &mtx, std::vector<Cache> const &cache);
+*/
 
 inline int ConverteXY2I (int, int);
 inline std::pair<int, int> ConverteI2XY (int);
 inline ImageType::IndexType ConverteI2Index (int);
 
 
-void uchar2float(typename ImageType::Pointer image, typename ImageType::Pointer image_in);
+void uchar2float(typename ImageType::Pointer image);
 void float2uchar(ImageType::Pointer, BMPType::Pointer);
 void float2uchar(ImageGrayType::Pointer, BMPGrayType::Pointer);
+
+
+/* Cabecalhos novos */
+void thread_L(ImageType::Pointer image, int ix, int iy, int total_pixels, arma::sp_fmat &L, std::mutex &mtx, std::vector<Cache> const &cache);
+double calculaL (ImageType::Pointer image, int ix, int iy, int jx, int jy, std::pair<int, int> wp, std::vector<Cache> const &cache);
+arma::fmat carregaJanela (ImageType::Pointer image, int x, int y);
+std::vector<std::pair<int, int>> achaJanelas (int ix, int iy, int jx, int jy);
+double matting_L (ImageType::Pointer image, int ix, int iy, int jx, int jy, std::vector<Cache> const &cache);
 
 int ConverteXY2I (int x, int y) {
     return (y*largura + x);
@@ -120,12 +132,9 @@ int main(int argc, char *argv[])
  
 
   ImageType::Pointer image = ImageType::New();
-  ImageType::Pointer image_in = ImageType::New();
-  ImageType::Pointer image_ac = ImageType::New();
+//  ImageType::Pointer image_in = ImageType::New();
   ImageType::Pointer image_out = ImageType::New();
   ImageType::Pointer image_out2 = ImageType::New();
-  ImageGrayType::Pointer image_min = ImageGrayType::New();
-  ImageGrayType::Pointer image_dark = ImageGrayType::New();
   ImageGrayType::Pointer image_tchapeu = ImageGrayType::New();
   ImageGrayType::Pointer image_t = ImageGrayType::New();
   ImageGrayType::Pointer image_t2 = ImageGrayType::New();
@@ -155,79 +164,108 @@ int main(int argc, char *argv[])
 
   region.SetSize(size);
   region.SetIndex(start);
-  image_dark->SetRegions(region);
-  image_dark->Allocate();
 
-  image_ac->SetRegions(region);
-  image_ac->Allocate();
 
-  image_min->SetRegions(region);
-  image_min->Allocate();
 
+  /*
   image_in->SetRegions(region);
   image_in->Allocate();
+  */
 
   image_out->SetRegions(region);
   image_out->Allocate();
 
+  /*
   image_out2->SetRegions(region);
   image_out2->Allocate();
+  */
 
   image_tchapeu->SetRegions(region);
   image_tchapeu->Allocate();
 
+  /*
   image_t->SetRegions(region);
   image_t->Allocate();
+  */
 
   image_t2->SetRegions(region);
   image_t2->Allocate();
 
+
+  std::vector<double> pixel_A;
+  uchar2float (image);
+  {
+  ImageGrayType::Pointer image_min = ImageGrayType::New();
+  image_min->SetRegions(region);
+  image_min->Allocate();
+  minima (image, image_min);
+
+  ImageGrayType::Pointer image_dark = ImageGrayType::New();
+  image_dark->SetRegions(region);
+  image_dark->Allocate();
+
+  dark_channel (image_min, image_dark);
+  pixel_A = achaA(image_dark, image);
+  std::cout << "Valor de A atmosferico: " << pixel_A[0] << "," << pixel_A[1] << "," << pixel_A[2] << std::endl;
+
+  ImageType::Pointer image_ac = ImageType::New();
+  image_ac->SetRegions(region);
+  image_ac->Allocate();
+  corrigeA (image, image_ac, pixel_A);
+  minima (image_ac, image_min);
+  dark_channel (image_min, image_dark);
+  calculaT (image_dark, image_tchapeu);
+
+  {
   image_bmp->SetRegions(region);
   image_bmp->Allocate();
 
   image_gray_bmp->SetRegions(region);
   image_gray_bmp->Allocate();
 
-  uchar2float (image, image_in);
-  minima (image_in, image_min);
-  dark_channel (image_min, image_dark);
-  std::vector<double> pixel_A = achaA(image_dark, image_in);
-  std::cout << "Valor de A atmosferico: " << pixel_A[0] << "," << pixel_A[1] << "," << pixel_A[2] << std::endl;
-
-  corrigeA (image_in, image_ac, pixel_A);
-  minima (image_ac, image_min);
-  dark_channel (image_min, image_dark);
-  calculaT (image_dark, image_tchapeu);
-//  matting (image_in, image_tchapeu, image_t);
-  matting2 (image_in, image_tchapeu, image_t2);
-
-  tiraHaze(image_in, image_t2, image_out, pixel_A);
-  tiraHaze(image_in, image_tchapeu, image_out2, pixel_A);
-
-  std::cout << "Salvando imagens" << std::endl;
-
-  float2uchar(image_t2, image_gray_bmp);
-  WriteFile<BMPGrayType>(inputFilename + ".t2.bmp", image_gray_bmp);
   float2uchar(image_tchapeu, image_gray_bmp);
   WriteFile<BMPGrayType>(inputFilename + ".tchapeu.bmp", image_gray_bmp);
   float2uchar(image_dark, image_gray_bmp);
   WriteFile<BMPGrayType>(inputFilename + ".dark.bmp", image_gray_bmp);
   float2uchar(image_min, image_gray_bmp);
   WriteFile<BMPGrayType>(inputFilename + ".min.bmp", image_gray_bmp);
+  }
+
+
+
+  }
+//  matting (image_in, image_tchapeu, image_t);
+  matting2 (image, image_tchapeu, image_t2);
+
+  tiraHaze(image, image_t2, image_out, pixel_A);
+
+  std::cout << "Salvando imagens" << std::endl;
+
+  {
+  image_bmp->SetRegions(region);
+  image_bmp->Allocate();
+
+  image_gray_bmp->SetRegions(region);
+  image_gray_bmp->Allocate();
+
+
+  float2uchar(image_t2, image_gray_bmp);
+  WriteFile<BMPGrayType>(inputFilename + ".t2.bmp", image_gray_bmp);
   float2uchar(image_out, image_bmp);
   WriteFile<BMPType>(inputFilename + ".out.bmp", image_bmp);
+  }
 
   std::cout << "Exibindo imagens" << std::endl;
 
   QuickView viewer;
-  viewer.AddImage(image_in.GetPointer(), true, "in");
+  viewer.AddImage(image.GetPointer(), true, "in");
 //  viewer.AddImage(image_min.GetPointer(), true, "min");
 //  viewer.AddImage(image_dark.GetPointer(), true, "dark");
 //  viewer.AddImage(image_t.GetPointer(), true, "t");
   viewer.AddImage(image_t2.GetPointer(), true, "t2");
   viewer.AddImage(image_tchapeu.GetPointer(), true, "tchapeu");
   viewer.AddImage(image_out.GetPointer(), true, "out");
-  viewer.AddImage(image_out2.GetPointer(), true, "out2");
+//  viewer.AddImage(image_out2.GetPointer(), true, "out2");
   viewer.Visualize();
 
   return EXIT_SUCCESS;
@@ -287,7 +325,7 @@ void float2uchar(ImageType::Pointer image, BMPType::Pointer image2) {
 
 
 
-void uchar2float(typename ImageType::Pointer image, typename ImageType::Pointer image_in) {
+void uchar2float(typename ImageType::Pointer image) {
   /* transforma imagem unsigned char em float */
   for (unsigned int i = 0; i < size[0]; i++) {
       for (unsigned int j = 0; j < size[1]; j++) {
@@ -295,7 +333,7 @@ void uchar2float(typename ImageType::Pointer image, typename ImageType::Pointer 
           pixel[0] /= 255.0;
           pixel[1] /= 255.0;
           pixel[2] /= 255.0;
-          image_in->SetPixel({i, j}, pixel);
+          image->SetPixel({i, j}, pixel);
       }
   }
 }
@@ -354,7 +392,7 @@ void dark_channel(typename ImageGrayType::Pointer image_min, typename ImageGrayT
 std::vector<double> achaA(typename ImageGrayType::Pointer image_dark, typename ImageType::Pointer image_in) {
   std::cout << "Procurando valor de A..." << std::endl;
   unsigned int total_pixels = size[0]*size[1];
-  int porcento01 = ceil((double) total_pixels * 0.01);
+  int porcento01 = ceil((double) total_pixels * 0.001);
   float pixel_max = 1.0f;
   std::cout << "Total pixels: " << total_pixels << std::endl;
   std::cout << "0.1%: " << porcento01 << std::endl;
@@ -372,7 +410,7 @@ std::vector<double> achaA(typename ImageGrayType::Pointer image_dark, typename I
   PixelType *ptr2 = image_in->GetBufferPointer();
   for (int i = 0; i < porcento01; i++) {
       PixelType *pixel = ptr2+pixels[i].second;
-      if (VERBOSE || 1) {
+      if (VERBOSE) {
           std::cout << " -> pixel: " << pixels[i].first << " (" << i << "/" << porcento01 << ")" << std::endl;
           std::cout << "    -> ( " << (*pixel)[0] << " , " << (*pixel)[1] << " , " << (*pixel)[2] << " )" << std::endl;
       }
@@ -767,13 +805,28 @@ double laplacian(ImageType::Pointer image_in, unsigned int ix, unsigned int iy, 
     return retorno;
 }
 
-void thread_L(ImageType::Pointer image, int i, int total_pixels, arma::sp_mat &L, std::mutex &mtx, std::vector<Cache> const &cache) {
+void thread_L(ImageType::Pointer image, int ix, int iy, int total_pixels, arma::sp_fmat &L, std::mutex &mtx, std::vector<Cache> const &cache) {
 //    arma::sp_mat Ltmp(total_pixels, total_pixels);
     std::unordered_map<int, double> Ltmp;
-    for (int j=i+1; j < total_pixels; j++) {
-        double tmp = matting_L(image, i, j, cache);
-        if (!std::isnan(tmp)) {
-            Ltmp[j] = tmp;
+
+    int i = ConverteXY2I(ix, iy);
+
+    for (int jx = ix+1; jx < std::min(ix+3,(int) size[0]); jx++) {
+            double tmp = matting_L(image, ix, iy, jx, iy, cache);
+            if (!std::isnan(tmp)) {
+                //Ltmp[j] = tmp;
+                Ltmp[ConverteXY2I(jx,iy)] = tmp;
+            }
+    }
+
+    if (iy+1 < size[1]) 
+    for (int jy = iy+1; jy < std::min(iy+3,(int) size[1]); jy++) {
+        for (int jx = std::max(ix-2,0); jx < std::min(ix+3,(int) size[0]); jx++) {
+                double tmp = matting_L(image, ix, iy, jx, jy, cache);
+                if (!std::isnan(tmp)) {
+                    //Ltmp[j] = tmp;
+                    Ltmp[ConverteXY2I(jx,jy)] = tmp;
+                }
         }
     }
     {
@@ -785,26 +838,29 @@ void thread_L(ImageType::Pointer image, int i, int total_pixels, arma::sp_mat &L
     posts--;
 }
 
-
-
 void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu, ImageGrayType::Pointer image_t) {
 
     long int total_pixels = size[0]*size[1];
     std::cout << "matting2: " << size[0] << "x" << size[1] << std::endl;
-    arma::sp_mat L(total_pixels, total_pixels);
+    arma::sp_fmat L(total_pixels, total_pixels);
 
     std::vector<Cache> cache;
     cache.reserve(total_pixels);
 
 
     std::cout << "Fazendo cache..." << std::flush;
-    for (int w=0; w<total_pixels; w++) {
-        Cache tmp;
-        arma::mat W(carregaJanela(image_in, w));
-        tmp.mean = arma::mean(W).t();
-        arma::mat Wcov(W.t()*W/wk - tmp.mean*tmp.mean.t());
-        tmp.cov_inv = arma::inv(Wcov + (epsilon/wk)*arma::eye(3,3));
-        cache[w] = tmp;
+    {
+        int w = 0;
+        for (int y=0; y<size[1]; y++) {
+            for (int x=0; x<size[0]; x++) {
+                Cache tmp;
+                arma::fmat W(carregaJanela(image_in, x, y));
+                tmp.mean = arma::mean(W).t();
+                arma::fmat Wcov(W.t()*W/wk - tmp.mean*tmp.mean.t());
+                tmp.cov_inv = arma::inv(Wcov + (float) (epsilon/wk)*arma::eye<arma::fmat>(3,3));
+                cache[w++] = tmp;
+            }
+        }
     }
     std::cout << " feito" << std::endl;
 
@@ -819,21 +875,23 @@ void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu
     posts=0;
 
     std::cout << "Fazendo L..." << std::endl;
-    for (int i=0; i < total_pixels; i++) {
-        if (i % 100 == 0) std::cout << "   -> " << i << " de " << total_pixels << std::endl;
-//        for (int j=i+1; j < total_pixels; j++) {
-//            std::cout << "      -> Posting L(" << i << ")" << std::flush;
-            _io.post(boost::bind(&thread_L, image_in, i, total_pixels, boost::ref(L), boost::ref(mtx), boost::ref(cache)));
+    for (int iy=0; iy < size[1]; iy++) {
+        if (iy % 1 == 0) std::cout << "   -> " << iy << " de " << size[1] << std::endl;
+        for (int ix=0; ix < size[0]; ix++) {
+            //        for (int j=i+1; j < total_pixels; j++) {
+            //            std::cout << "      -> Posting L(" << i << ")" << std::flush;
+            _io.post(boost::bind(&thread_L, image_in, ix, iy, total_pixels, boost::ref(L), boost::ref(mtx), boost::ref(cache)));
             posts++;
-//            std::cout << " done" << std::endl;
+            //            std::cout << " done" << std::endl;
             /*
-            double tmp = matting_L (image_in, i, j);
-            if (!std::isnan(tmp)) {
-                L(j,i) = L(i,j) = tmp;
-                soma += tmp;
-            }
-            */
-//        }
+               double tmp = matting_L (image_in, i, j);
+               if (!std::isnan(tmp)) {
+               L(j,i) = L(i,j) = tmp;
+               soma += tmp;
+               }
+               */
+            //        }
+        }
     }
 
     std::cout << "All processes posted to threads, joining..." << std::endl;
@@ -868,7 +926,7 @@ void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu
     for (int i=0; i < total_pixels; i++) L(i,i) += lambda;
 
     std::cout << "Fazendo Mtchapeu..." << std::endl;
-    arma::mat Mtchapeu(total_pixels,1);
+    arma::fmat Mtchapeu(total_pixels,1);
     {
         auto *ptr = image_tchapeu->GetBufferPointer();
         unsigned int c = 0;
@@ -887,7 +945,7 @@ void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu
 
     }
     std::cout << "Fazendo Mt..." << std::endl;
-    arma::mat Mt = arma::spsolve(L,Mtchapeu);
+    arma::fmat Mt = arma::spsolve(L,Mtchapeu);
     std::cout << "Fazendo t..." << std::endl;
     {
         double tmin=Mt(0,0), tmax=Mt(0,0);
@@ -915,46 +973,44 @@ void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu
     }
 }
 
-double matting_L (ImageType::Pointer image, int i, int j, std::vector<Cache> const &cache) {
-    std::vector<int> Ws(achaJanelas (i, j));
+double matting_L (ImageType::Pointer image, int ix, int iy, int jx, int jy, std::vector<Cache> const &cache) {
+    std::vector<std::pair<int, int>> Ws(achaJanelas (ix, iy, jx, jy));
     if (Ws.size() == 0) return std::numeric_limits<double>::quiet_NaN();
     double soma = 0.0;
     for (auto &w : Ws) {
-        soma += calculaL (image, i, j, w, cache);
+        soma += calculaL (image, ix, iy, jx, jy, w, cache);
     }
     return soma;
 }
 
-std::vector<int> achaJanelas (int i, int j) {
+std::vector<std::pair<int, int>> achaJanelas (int ix, int iy, int jx, int jy) {
     //    int ix, iy, jx, jy;
     //    std::tie(ix,iy) = ConverteI2XY(i);
     //    std::tie(jx,jy) = ConverteI2XY(j);
 
 
 
-    auto Pi = ConverteI2XY(i);
-    auto Pj = ConverteI2XY(j);
     /*
        int ix = mapa[i].first,
        iy = mapa[i].second,
        jx = mapa[j].first,
        jy = mapa[j].second;
        */
-    std::vector<int> ws;
+    std::vector<std::pair<int, int>> ws;
 
-    if (abs(Pi.first-Pj.first) < 3 && abs(Pi.second-Pj.second) < 3) {
-        int xmin = std::max(std::min(Pi.first,Pj.first)-2,0),
-            xmax = std::min(std::max(Pi.first,Pj.first)+2,largura-1),
-            ymin = std::max(std::min(Pi.second,Pj.second)-2,0),
-            ymax = std::min(std::max(Pi.second,Pj.second)+2,altura-1);
+    if (abs(ix-jx) < 3 && abs(iy-jy) < 3) {
+        int xmin = std::max(std::min(ix,jx)-2,0),
+            xmax = std::min(std::max(ix,jx)+2,largura-1),
+            ymin = std::max(std::min(iy,jy)-2,0),
+            ymax = std::min(std::max(iy,jy)+2,altura-1);
 
         for (int x = xmin; x <= xmax; x++) {
             for (int y = ymin; y <= ymax; y++) {
-                if (    abs(x-Pi.first) < 2 &&
-                        abs(x-Pj.first) < 2 &&
-                        abs(y-Pi.second) < 2 &&
-                        abs(y-Pj.second) < 2) {
-                    ws.push_back(ConverteXY2I(x,y));
+                if (    abs(x-ix) < 2 &&
+                        abs(x-jx) < 2 &&
+                        abs(y-iy) < 2 &&
+                        abs(y-jy) < 2) {
+                    ws.push_back({x,y});
                 }
             }
         }
@@ -962,11 +1018,11 @@ std::vector<int> achaJanelas (int i, int j) {
     return ws;
 }
 
-arma::mat carregaJanela (ImageType::Pointer image, int w) {
-    int x,y;
-    std::tie(x,y) = ConverteI2XY(w);
+arma::fmat carregaJanela (ImageType::Pointer image, int x, int y) {
+//    int x,y;
+//    std::tie(x,y) = ConverteI2XY(w);
 //    int x = mapa[w].first, y = mapa[w].second;
-    arma::mat W(9,3);
+    arma::fmat W(9,3);
     ImageType::SizeType size;
     size = image->GetLargestPossibleRegion().GetSize();
     unsigned int c = 0;
@@ -991,12 +1047,13 @@ arma::mat carregaJanela (ImageType::Pointer image, int w) {
     return W;
 }
 
-double calculaL (ImageType::Pointer image, int i, int j, int w, std::vector<Cache> const &cache) {
+double calculaL (ImageType::Pointer image, int ix, int iy, int jx, int jy, std::pair<int, int> wp, std::vector<Cache> const &cache) {
     using namespace std;
-    if (DEBUG) std::cout << "calculaL i=" << i << " j=" << j << " w=" << w << std::endl;
-    double resultado = (i==j) ? 1.0 : 0.0;
-    auto pixelI = image->GetPixel(ConverteI2Index(i));
-    auto pixelJ = image->GetPixel(ConverteI2Index(j));
+    int w = ConverteXY2I(wp.first, wp.second);
+    if (DEBUG) std::cout << "calculaL i = (" << ix << "," << iy << ") j = (" << jx << "," << jy << ") w = ( " << wp.first << "," << wp.second << " )" << std::endl;
+    double resultado = (ix==jx && iy == jy) ? 1.0 : 0.0;
+    auto pixelI = image->GetPixel({ix, iy});
+    auto pixelJ = image->GetPixel({jx, jy});
     arma::mat Ii, Ij;
     Ii << pixelI[0] << arma::endr << pixelI[1] << arma::endr << pixelI[2];
     Ij << pixelJ[0] << arma::endr << pixelJ[1] << arma::endr << pixelJ[2];
