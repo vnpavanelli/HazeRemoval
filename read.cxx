@@ -23,8 +23,11 @@
  
   typedef float PixelComponent;
   typedef itk::RGBPixel< PixelComponent >    PixelType;
+  typedef itk::RGBPixel< unsigned char >    RGBPixelType;
   typedef itk::Image<PixelType, 2> ImageType;
   typedef itk::Image<PixelComponent, 2> ImageGrayType;
+  typedef itk::Image<RGBPixelType, 2> BMPType;
+  typedef itk::Image<unsigned char, 2> BMPGrayType;
 
   double epsilon = 1e-4; //1e-3;
   double lambda = 1e-4;
@@ -80,6 +83,8 @@ inline ImageType::IndexType ConverteI2Index (int);
 
 
 void uchar2float(typename ImageType::Pointer image, typename ImageType::Pointer image_in);
+void float2uchar(ImageType::Pointer, BMPType::Pointer);
+void float2uchar(ImageGrayType::Pointer, BMPGrayType::Pointer);
 
 int ConverteXY2I (int x, int y) {
     return (y*largura + x);
@@ -118,11 +123,15 @@ int main(int argc, char *argv[])
   ImageType::Pointer image_in = ImageType::New();
   ImageType::Pointer image_ac = ImageType::New();
   ImageType::Pointer image_out = ImageType::New();
+  ImageType::Pointer image_out2 = ImageType::New();
   ImageGrayType::Pointer image_min = ImageGrayType::New();
   ImageGrayType::Pointer image_dark = ImageGrayType::New();
   ImageGrayType::Pointer image_tchapeu = ImageGrayType::New();
   ImageGrayType::Pointer image_t = ImageGrayType::New();
   ImageGrayType::Pointer image_t2 = ImageGrayType::New();
+  BMPType::Pointer image_bmp = BMPType::New();
+  BMPGrayType::Pointer image_gray_bmp = BMPGrayType::New();
+
 
   ReadFile<ImageType>(inputFilename, image);
   
@@ -144,8 +153,6 @@ int main(int argc, char *argv[])
   largura = size[0]; 
   altura = size[1];
 
-
-
   region.SetSize(size);
   region.SetIndex(start);
   image_dark->SetRegions(region);
@@ -163,15 +170,23 @@ int main(int argc, char *argv[])
   image_out->SetRegions(region);
   image_out->Allocate();
 
+  image_out2->SetRegions(region);
+  image_out2->Allocate();
+
   image_tchapeu->SetRegions(region);
   image_tchapeu->Allocate();
 
   image_t->SetRegions(region);
   image_t->Allocate();
 
-
   image_t2->SetRegions(region);
   image_t2->Allocate();
+
+  image_bmp->SetRegions(region);
+  image_bmp->Allocate();
+
+  image_gray_bmp->SetRegions(region);
+  image_gray_bmp->Allocate();
 
   uchar2float (image, image_in);
   minima (image_in, image_min);
@@ -187,14 +202,20 @@ int main(int argc, char *argv[])
   matting2 (image_in, image_tchapeu, image_t2);
 
   tiraHaze(image_in, image_t2, image_out, pixel_A);
+  tiraHaze(image_in, image_tchapeu, image_out2, pixel_A);
 
   std::cout << "Salvando imagens" << std::endl;
 
-  WriteFile<ImageGrayType>(inputFilename + ".t2.tif", image_t2);
-  WriteFile<ImageGrayType>(inputFilename + ".tchapeu.tif", image_tchapeu);
-  WriteFile<ImageGrayType>(inputFilename + ".dark.tif", image_dark);
-  WriteFile<ImageGrayType>(inputFilename + ".min.tif", image_min);
-  WriteFile<ImageType>(inputFilename + ".out.tif", image_out);
+  float2uchar(image_t2, image_gray_bmp);
+  WriteFile<BMPGrayType>(inputFilename + ".t2.bmp", image_gray_bmp);
+  float2uchar(image_tchapeu, image_gray_bmp);
+  WriteFile<BMPGrayType>(inputFilename + ".tchapeu.bmp", image_gray_bmp);
+  float2uchar(image_dark, image_gray_bmp);
+  WriteFile<BMPGrayType>(inputFilename + ".dark.bmp", image_gray_bmp);
+  float2uchar(image_min, image_gray_bmp);
+  WriteFile<BMPGrayType>(inputFilename + ".min.bmp", image_gray_bmp);
+  float2uchar(image_out, image_bmp);
+  WriteFile<BMPType>(inputFilename + ".out.bmp", image_bmp);
 
   std::cout << "Exibindo imagens" << std::endl;
 
@@ -206,6 +227,7 @@ int main(int argc, char *argv[])
   viewer.AddImage(image_t2.GetPointer(), true, "t2");
   viewer.AddImage(image_tchapeu.GetPointer(), true, "tchapeu");
   viewer.AddImage(image_out.GetPointer(), true, "out");
+  viewer.AddImage(image_out2.GetPointer(), true, "out2");
   viewer.Visualize();
 
   return EXIT_SUCCESS;
@@ -236,6 +258,34 @@ void ReadFile(std::string filename, typename TImageType::Pointer image)
 
   image->Graft(reader->GetOutput());
 }
+
+void float2uchar(ImageGrayType::Pointer image, BMPGrayType::Pointer image2) {
+  /* transforma imagem unsigned char em float */
+  for (unsigned int i = 0; i < size[0]; i++) {
+      for (unsigned int j = 0; j < size[1]; j++) {
+          auto pixel = image->GetPixel({i,j});
+          pixel = std::min(255.0, std::max(0.0, (double) pixel*255));
+          image2->SetPixel({i, j}, pixel);
+      }
+  }
+}
+
+
+
+void float2uchar(ImageType::Pointer image, BMPType::Pointer image2) {
+  /* transforma imagem unsigned char em float */
+  for (unsigned int i = 0; i < size[0]; i++) {
+      for (unsigned int j = 0; j < size[1]; j++) {
+          auto pixel = image->GetPixel({i,j});
+          pixel[0] = std::min(255.0, std::max(0.0, (double) pixel[0]*255));
+          pixel[1] = std::min(255.0, std::max(0.0, (double) pixel[1]*255));
+          pixel[2] = std::min(255.0, std::max(0.0, (double) pixel[2]*255));
+          image2->SetPixel({i, j}, pixel);
+      }
+  }
+}
+
+
 
 void uchar2float(typename ImageType::Pointer image, typename ImageType::Pointer image_in) {
   /* transforma imagem unsigned char em float */
@@ -304,12 +354,11 @@ void dark_channel(typename ImageGrayType::Pointer image_min, typename ImageGrayT
 std::vector<double> achaA(typename ImageGrayType::Pointer image_dark, typename ImageType::Pointer image_in) {
   std::cout << "Procurando valor de A..." << std::endl;
   unsigned int total_pixels = size[0]*size[1];
-  int porcento01 = ceil((double) total_pixels * 0.001);
+  int porcento01 = ceil((double) total_pixels * 0.01);
   float pixel_max = 1.0f;
   std::cout << "Total pixels: " << total_pixels << std::endl;
   std::cout << "0.1%: " << porcento01 << std::endl;
-  std::vector<double> pixel_A;
-  pixel_A.resize(3);
+  std::vector<double> pixel_A({0, 0, 0});
 
   std::vector<std::pair<double, unsigned int>> pixels;
   pixels.reserve(total_pixels);
@@ -359,6 +408,8 @@ std::vector<double> achaA(typename ImageGrayType::Pointer image_dark, typename I
 
 void tiraHaze(ImageType::Pointer image_in, ImageGrayType::Pointer image_dark, ImageType::Pointer image_out, std::vector<double> A) {
   const PixelComponent t_max = 0.1;
+  std::vector<float> pixel_minimo({1, 1, 1}), 
+      pixel_maximo({0, 0, 0});
   for (unsigned int i = 0; i < size[0]; i++) {
       for (unsigned int j = 0; j < size[1]; j++) {
           PixelType pixel = image_in->GetPixel({i,j});
@@ -366,9 +417,23 @@ void tiraHaze(ImageType::Pointer image_in, ImageGrayType::Pointer image_dark, Im
           //PixelComponent t_dark = 1.0-0.95*(image_dark->GetPixel({i,j}));
           PixelComponent t_dark = image_dark->GetPixel({i,j});
           double t = std::max(t_max,t_dark);
-          pixelout[0] = std::min(1.0, std::max(0.0, ((double) pixel[0] - A[0])/t + A[0] )); 
-          pixelout[1] = std::min(1.0, std::max(0.0, ((double) pixel[1] - A[1])/t + A[1] )); 
-          pixelout[2] = std::min(1.0, std::max(0.0, ((double) pixel[2] - A[2])/t + A[2] )); 
+
+          pixelout[0] = ((double) pixel[0] - A[0])/t + A[0];
+          pixelout[1] = ((double) pixel[1] - A[1])/t + A[1];
+          pixelout[2] = ((double) pixel[2] - A[2])/t + A[2];
+
+          pixel_minimo[0] = std::min(pixel_minimo[0], pixelout[0]);
+          pixel_minimo[1] = std::min(pixel_minimo[1], pixelout[1]);
+          pixel_minimo[2] = std::min(pixel_minimo[2], pixelout[2]);
+
+          pixel_maximo[0] = std::max(pixel_maximo[0], pixelout[0]);
+          pixel_maximo[1] = std::max(pixel_maximo[1], pixelout[1]);
+          pixel_maximo[2] = std::max(pixel_maximo[2], pixelout[2]);
+
+          pixelout[0] = std::min(1.0, std::max(0.0, (double) pixelout[0]));
+          pixelout[1] = std::min(1.0, std::max(0.0, (double) pixelout[1]));
+          pixelout[2] = std::min(1.0, std::max(0.0, (double) pixelout[2]));
+
           if (DEBUG || VERBOSE) {
           std::cout << " -> (" << i << "," << j << ") t: " << (double) t << " tx: " << t_dark <<  " pixel0: " << (double) pixel[0] << " pixelout0: " << (double) pixelout[0] 
                     << " pixel1: " << (double) pixel[1] << " pixelout1: " << (double) pixelout[1]
@@ -379,6 +444,9 @@ void tiraHaze(ImageType::Pointer image_in, ImageGrayType::Pointer image_dark, Im
           image_out->SetPixel({i,j}, pixelout);
       }
   }
+  std::cout << "TiraHaze!!!!" << std::endl
+            << "Pixel minimo: ( " << pixel_minimo[0] << " , " << pixel_minimo[1] << " , " << pixel_minimo[2] << " ) " << std::endl
+            << "Pixel maximo: ( " << pixel_maximo[0] << " , " << pixel_maximo[1] << " , " << pixel_maximo[2] << " ) " << std::endl;
 }
 
 void corrigeA(ImageType::Pointer image_in, ImageType::Pointer image_ac, std::vector<double> A) {
@@ -804,10 +872,19 @@ void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu
     {
         auto *ptr = image_tchapeu->GetBufferPointer();
         unsigned int c = 0;
+        double tmin=1.0, tmax=0.0;
         while (c < total_pixels) {
+            if (*(ptr+c) > tmax) tmax = *(ptr+c);
+            if (*(ptr+c) < tmin) tmin = *(ptr+c);
             Mtchapeu(c,0) = *(ptr+c)*lambda;
             c++;
         }
+        std::cout << "*******************************************************" << std::endl;
+        std::cout << "*******************************************************" << std::endl;
+        std::cout << "tcmin = " << tmin << "  tcmax = " << tmax << std::endl;
+        std::cout << "*******************************************************" << std::endl;
+        std::cout << "*******************************************************" << std::endl;
+
     }
     std::cout << "Fazendo Mt..." << std::endl;
     arma::mat Mt = arma::spsolve(L,Mtchapeu);
@@ -828,6 +905,13 @@ void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu
         std::cout << "tmin = " << tmin << "  tmax = " << tmax << std::endl;
         std::cout << "*******************************************************" << std::endl;
         std::cout << "*******************************************************" << std::endl;
+        /*
+        c=0;
+        while (c < total_pixels) {
+            *(ptr+c) = (*(ptr+c)-tmin) * (tmax-tmin);
+            c++;
+        }
+        */
     }
 }
 
