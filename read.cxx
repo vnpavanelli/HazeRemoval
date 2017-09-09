@@ -6,6 +6,7 @@
 #define ARMA_NO_DEBUG
 #define ARMA_MAT_PREALLOC 3
 #include <armadillo>
+#include <armadillo_bits/arma_forward.hpp>
 #include <stdlib.h>
 #include <itkNeighborhood.h>
 #include <itkNeighborhoodIterator.h>
@@ -916,9 +917,9 @@ void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu
         auto Lsum = arma::sum(L,1);
         std::cout << " Lsum" << std::flush;
         L -= diagmat(Lsum);
-        std::cout << " diag" << std::flush;
+        std::cout << " lambda" << std::flush;
         L.diag() += lambda;
-        std::cout << "feito" << std::endl;
+        std::cout << " feito" << std::endl;
     }
 
     /*
@@ -957,7 +958,11 @@ void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu
 
     }
     std::cout << "Fazendo Mt..." << std::endl;
-    arma::fmat Mt = arma::spsolve(L,Mtchapeu);
+    arma::fmat Mt;
+    arma::superlu_opts opts;
+    opts.symmetric=true;
+    opts.refine=arma::superlu_opts::REF_NONE;
+    arma::spsolve(Mt, L, Mtchapeu, "superlu", opts);
     std::cout << "Fazendo t..." << std::endl;
     {
         double tmin=Mt(0,0), tmax=Mt(0,0);
