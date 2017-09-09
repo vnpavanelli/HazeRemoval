@@ -4,6 +4,7 @@
 #include "itkCastImageFilter.h"
 #include "QuickView.h"
 #define ARMA_NO_DEBUG
+#define ARMA_MAT_PREALLOC 3
 #include <armadillo>
 #include <stdlib.h>
 #include <itkNeighborhood.h>
@@ -807,7 +808,7 @@ double laplacian(ImageType::Pointer image_in, unsigned int ix, unsigned int iy, 
 
 void thread_L(ImageType::Pointer image, int ix, int iy, int total_pixels, arma::sp_fmat &L, std::mutex &mtx, std::vector<Cache> const &cache) {
 //    arma::sp_mat Ltmp(total_pixels, total_pixels);
-    std::unordered_map<int, double> Ltmp;
+    std::unordered_map<int, float> Ltmp;
 
     int i = ConverteXY2I(ix, iy);
 
@@ -833,6 +834,7 @@ void thread_L(ImageType::Pointer image, int ix, int iy, int total_pixels, arma::
         std::lock_guard<std::mutex> guard(mtx);
         for (auto &tmp : Ltmp) {
             L(i,tmp.first) = L(tmp.first,i) = tmp.second;
+            //L(i,tmp.first) = tmp.second;
         }
     }
     posts--;
@@ -903,10 +905,20 @@ void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu
     _work.reset();
     _threads.join_all();
     std::cout << "All threads joined" << std::endl;
+    std::vector<Cache>().swap(cache);
+    std::cout << "Cache cleared" << std::endl;
+    std::cout << "Making symmetric matrix... " << std::flush;
+    //L = arma::symmatu(L);
+    std::cout << "done" << std::endl;
 
     {
+        std::cout << "Fazendo diagonal... " << std::flush;
         auto Lsum = arma::sum(L,1);
+        std::cout << " Lsum" << std::flush;
         L -= diagmat(Lsum);
+        std::cout << " diag" << std::flush;
+        L.diag() += lambda;
+        std::cout << "feito" << std::endl;
     }
 
     /*
@@ -923,7 +935,7 @@ void matting2 (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu
 //    checaL(L);
     
     std::cout << "Somando Lambda..." << std::endl;
-    for (int i=0; i < total_pixels; i++) L(i,i) += lambda;
+//    L.diag() += lambda;
 
     std::cout << "Fazendo Mtchapeu..." << std::endl;
     arma::fmat Mtchapeu(total_pixels,1);
