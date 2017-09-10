@@ -1256,22 +1256,6 @@ arma::fmat fmean(arma::fmat const &I_in) {
     }
     for (auto &i : jobs) i.wait();
 
-    /*
-    retorno.each_col([r](arma::Col<float> &a) {
-            arma::Col<float> tmp(a.n_elem); 
-            for (int i=0; i < a.n_elem; i++) {
-                int b = std::max(0,i-r/2);
-                //int e = std::min(i,(int) a.n_elem-r/2);
-                int e = std::min(i+r/2,(int) a.n_elem-1);
-                tmp(i) = arma::mean( a(arma::span(b,e)) );
-//                std::cout << "Row: i=" << i << " [" << b << "," << e << "] tmp(i)=" << tmp(i) << std::endl;
-//                (a(arma::span(b,e))).print("w=");
-//                if (i>10) exit(1);
-//                tmp(i) = arma::accu( a(arma::span(b,e)))/(float) (e-b+1);
-            }
-            a = tmp;
-            });
-            */
     return retorno2;
 }
 
