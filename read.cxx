@@ -173,12 +173,14 @@ int main(int argc, char *argv[])
   start[0] = start[1] = 0;
   size = image->GetLargestPossibleRegion().GetSize();
 
+  /*
     for (int i = 0; i < size[0]; i++) {
         for (int j = 0; j < size[1]; j++) {
             mapa[j*size[0]+i] = {i,j};
             mapa_inv[{i,j}] = j*size[0]+i;
         }
     }
+    */
 
 
   std::cout << "Image dimensions: " << size[0] << " x " << size[1] << std::endl;
@@ -245,11 +247,11 @@ int main(int argc, char *argv[])
   image_gray_bmp->Allocate();
 
   float2uchar(image_tchapeu, image_gray_bmp);
-  WriteFile<BMPGrayType>(inputFilename + ".tchapeu.bmp", image_gray_bmp);
+  WriteFile<BMPGrayType>(inputFilename + ".tchapeu.png", image_gray_bmp);
   float2uchar(image_dark, image_gray_bmp);
-  WriteFile<BMPGrayType>(inputFilename + ".dark.bmp", image_gray_bmp);
+  WriteFile<BMPGrayType>(inputFilename + ".dark.png", image_gray_bmp);
   float2uchar(image_min, image_gray_bmp);
-  WriteFile<BMPGrayType>(inputFilename + ".min.bmp", image_gray_bmp);
+  WriteFile<BMPGrayType>(inputFilename + ".min.png", image_gray_bmp);
   }
 
 
@@ -279,9 +281,9 @@ int main(int argc, char *argv[])
 
 
   float2uchar(image_t2, image_gray_bmp);
-  WriteFile<BMPGrayType>(inputFilename + ".t2.bmp", image_gray_bmp);
+  WriteFile<BMPGrayType>(inputFilename + ".t2.png", image_gray_bmp);
   float2uchar(image_out, image_bmp);
-  WriteFile<BMPType>(inputFilename + ".out.bmp", image_bmp);
+  WriteFile<BMPType>(inputFilename + ".out.png", image_bmp);
   }
 
   std::cout << "Exibindo imagens" << std::endl;
