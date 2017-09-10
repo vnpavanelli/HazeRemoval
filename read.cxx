@@ -2,6 +2,7 @@
 #include "itkImageFileReader.h"
 #include "itkImageFileWriter.h"
 #include "itkCastImageFilter.h"
+#include "itkBilateralImageFilter.h"
 #include "QuickView.h"
 #define ARMA_NO_DEBUG
 #define ARMA_MAT_PREALLOC 3
@@ -31,7 +32,12 @@
   typedef itk::Image<RGBPixelType, 2> BMPType;
   typedef itk::Image<unsigned char, 2> BMPGrayType;
 
+  typedef itk::BilateralImageFilter<
+      ImageGrayType, ImageGrayType >
+          FilterType;
+
   double epsilon = 1e-4; //1e-3;
+  double epsilonG = 1e-4;
   double lambda = 1e-4;
 //  const unsigned int wk = 9;
   const double wk = 9.0;
@@ -67,6 +73,7 @@ void tiraHaze(ImageType::Pointer image_in, ImageGrayType::Pointer image_gray, Im
 void corrigeA(ImageType::Pointer image_in, ImageType::Pointer image_ac, std::vector<double> A);
 void matting(ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu, ImageGrayType::Pointer image_t);
 void matting2(ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu, ImageGrayType::Pointer image_t);
+void guided_filtering(ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu, ImageGrayType::Pointer image_t);
 double laplacian(ImageType::Pointer image_in, unsigned int ix, unsigned int iy, unsigned int jx, unsigned int jy);
 double Lij(ImageType::Pointer image_in, int ix, int iy, int jx, int jy, std::map<unsigned int, arma::mat> const&, std::map<unsigned int, arma::mat> const&);
 void calculaT(typename ImageGrayType::Pointer image_dark, typename ImageGrayType::Pointer image_t);
@@ -100,6 +107,13 @@ arma::fmat carregaJanela (ImageType::Pointer image, int x, int y);
 std::vector<std::pair<int, int>> achaJanelas (int ix, int iy, int jx, int jy);
 double matting_L (ImageType::Pointer image, int ix, int iy, int jx, int jy, std::vector<Cache> const &cache);
 
+/* Guided Filtering */
+
+arma::fmat fmean(arma::fmat const &I);
+arma::fmat fmean2(arma::fmat const &I);
+arma::fmat fetchWindow(arma::fmat const &I, int x, int y, int r=3);
+float fetchMean(arma::fmat const &I, int x, int y, int r);
+
 int ConverteXY2I (int x, int y) {
     return (y*largura + x);
 }
@@ -129,6 +143,7 @@ int main(int argc, char *argv[])
   if (argc > 2) {
       lambda = atof(argv[2]);
       epsilon = atof(argv[3]);
+      epsilonG = atof(argv[4]);
   }
   std::string inputFilename = argv[1];
  
@@ -185,10 +200,8 @@ int main(int argc, char *argv[])
   image_tchapeu->SetRegions(region);
   image_tchapeu->Allocate();
 
-  /*
   image_t->SetRegions(region);
   image_t->Allocate();
-  */
 
   image_t2->SetRegions(region);
   image_t2->Allocate();
@@ -236,10 +249,18 @@ int main(int argc, char *argv[])
 
 
   }
-//  matting (image_in, image_tchapeu, image_t);
-  matting2 (image, image_tchapeu, image_t2);
+  guided_filtering(image, image_tchapeu, image_t);
+//  matting2 (image, image_tchapeu, image_t2);
 
-  tiraHaze(image, image_t2, image_out, pixel_A);
+  FilterType::Pointer bilateralFilter = FilterType::New();
+  bilateralFilter->SetInput( image_t.GetPointer() );
+  bilateralFilter->SetDomainSigma(2.0);
+  bilateralFilter->SetRangeSigma(2.0);
+  bilateralFilter->Update();
+  image_t2 = bilateralFilter->GetOutput();
+
+  //tiraHaze(image, image_t, image_out, pixel_A);
+  tiraHaze(image, image_t, image_out, pixel_A);
 
   std::cout << "Salvando imagens" << std::endl;
 
@@ -263,7 +284,7 @@ int main(int argc, char *argv[])
   viewer.AddImage(image.GetPointer(), true, "in");
 //  viewer.AddImage(image_min.GetPointer(), true, "min");
 //  viewer.AddImage(image_dark.GetPointer(), true, "dark");
-//  viewer.AddImage(image_t.GetPointer(), true, "t");
+  viewer.AddImage(image_t.GetPointer(), true, "t");
   viewer.AddImage(image_t2.GetPointer(), true, "t2");
   viewer.AddImage(image_tchapeu.GetPointer(), true, "tchapeu");
   viewer.AddImage(image_out.GetPointer(), true, "out");
@@ -365,6 +386,13 @@ void calculaT(typename ImageGrayType::Pointer image_dark, typename ImageGrayType
 void dark_channel(typename ImageGrayType::Pointer image_min, typename ImageGrayType::Pointer image_dark) {
   const int Patch_window = 7;  // floor(15/2);
 
+    arma::fmat  I(size[0], size[1]);
+    std::cout << "Loading image to matrix: " << std::endl;
+    for (int i=0; i < size[0]; i++) {
+        for (int j=0; j < size[1]; j++) {
+            I(i,j) = image_min->GetPixel({i,j});
+        }
+    }
   std::cout << "Criando Dark Channel..." << std::endl;
   /* Criar o Prior Dark Channel usando o minimo de um filtro Patch_window X Patch_window (e.g. 15x15) */
   for (int i = 0; i < size[0]; i++) {
@@ -375,6 +403,8 @@ void dark_channel(typename ImageGrayType::Pointer image_min, typename ImageGrayT
           i2 = std::min(i+Patch_window, (int) size[0]-1);
           j1 = std::max(j-Patch_window,0);
           j2 = std::min(j+Patch_window, (int) size[1]-1);
+          float min = I(arma::span(i1,i2),arma::span(j1,j2)).min();
+          /*
           auto min = image_min->GetPixel({i1,j1});
 //          std::cout << "Dark channel para (" << i << "," << j << ") nos intervalos: (" << i1 << "," << j1 << ") e (" << i2 << "," << j2 << ")" << std::endl;
           for (;i1<=i2;i1++) {
@@ -384,6 +414,7 @@ void dark_channel(typename ImageGrayType::Pointer image_min, typename ImageGrayT
 //                  std::cout << "  -> min = " << min << "  pixel = " << image_min->GetPixel({i1, ji}) << "  pos = (" << i1 << "," << ji << ")" << std::endl;
               }
           }
+          */
           image_dark->SetPixel({i,j}, min);
 //          exit(1);
       }
@@ -1083,4 +1114,170 @@ double calculaL (ImageType::Pointer image, int ix, int iy, int jx, int jy, std::
     if (DEBUG) tmp.print(cout, "tmp");
     resultado -= (1+tmp(0,0))/wk;
     return resultado;
+}
+
+
+void guided_filtering (ImageType::Pointer image_in, ImageGrayType::Pointer image_tchapeu, ImageGrayType::Pointer image_t) {
+    std::cout << "Starting Guided Filtering" << std::endl;
+    arma::fmat  I(altura, largura);
+    arma::fmat  P(altura, largura);
+    std::cout << "Steps: " << std::endl;
+    for (int i=0; i < altura; i++) {
+        for (int j=0; j < largura; j++) {
+            I(i,j) = image_in->GetPixel({j,i}).GetLuminance();
+            P(i,j) = image_tchapeu->GetPixel({j,i});
+        }
+    }
+    if (DEBUG) {
+        I.print(std::cout, "I");
+        P.print(std::cout, "P");
+    }
+
+#if 1
+    std::cout << " -> Loaded I,P" << std::endl;
+    arma::fmat meanI(fmean(I));
+    std::cout << " -> fmean(I)" << std::endl;
+    arma::fmat meanP = fmean(P);
+    std::cout << " -> fmean(P)" << std::endl;
+    arma::fmat corrI = fmean(I % I);
+    std::cout << " -> corr(I,I)" << std::endl;
+    arma::fmat corrIP = fmean (I % P);
+    std::cout << " -> corr(I,P)" << std::endl;
+    arma::fmat varI = corrI - (meanI % meanI);
+    std::cout << " -> var(I)" << std::endl;
+    arma::fmat covIP = corrIP - (meanI % meanP);
+    std::cout << " -> cov(I,P)" << std::endl;
+    arma::fmat a = covIP / (varI + epsilonG);
+    std::cout << " -> a" << std::endl;
+    arma::fmat b = meanP - a % meanI;
+    std::cout << " -> b" << std::endl;
+    arma::fmat meanA = fmean(a);
+    std::cout << " -> fmean(a)" << std::endl;
+    arma::fmat meanB = fmean(b);
+    std::cout << " -> fmean(b)" << std::endl;
+    arma::fmat q = (meanA % I) + meanB;
+    std::cout << " -> q" << std::endl;
+
+
+    if (DEBUG) {
+        meanI.print(std::cout, "meanI");
+        meanP.print(std::cout, "meanP");
+    }
+#else
+    arma::fmat q = fmean(P);
+#endif
+
+    std::cout << "Loading image_t" << std::endl;
+
+    for (int i=0; i < altura; i++) {
+        for (int j=0; j < largura; j++) {
+            image_t->SetPixel({j,i}, q(i,j));
+            if (VERBOSE) {
+                std::cout << "\t-> Ponto (" << i << "," << j << "):  " << P(i,j) << " => " << q(i,j) << std::endl;
+            }
+        }
+    }
+    std::cout << "Done" << std::endl;
+}
+
+
+arma::fmat fmean(arma::fmat const &I_in) {
+//    return fmean2(I_in);
+    int r = 60;
+    arma::fmat retorno(I_in);
+    retorno.each_row([r](arma::Row<float> &a) {
+            arma::Row<float> tmp(a.n_elem); 
+            for (int i=0; i < a.n_elem; i++) {
+                int b = std::max(0,i-r/2);
+                int e = std::min(i+r/2,(int) a.n_elem-1);
+                arma::fmat w(arma::mean(a(arma::span(b,e)),1));
+                tmp(i) = w(0);
+//                std::cout << "Row: i=" << i << " [" << b << "," << e << "](" << e-b << ") tmp(i)=" << tmp(i) << std::endl;
+//                w.print("w=");
+//                (arma::mean(w,1)).print("mean=");
+//                if (i>10) exit(1);
+//                tmp(i) = arma::accu( a(arma::span(b,e)))/(float) (e-b+1);
+            }
+            a = tmp;
+            });
+    retorno.each_col([r](arma::Col<float> &a) {
+            arma::Col<float> tmp(a.n_elem); 
+            for (int i=0; i < a.n_elem; i++) {
+                int b = std::max(0,i-r/2);
+                //int e = std::min(i,(int) a.n_elem-r/2);
+                int e = std::min(i+r/2,(int) a.n_elem-1);
+                tmp(i) = arma::mean( a(arma::span(b,e)) );
+//                std::cout << "Row: i=" << i << " [" << b << "," << e << "] tmp(i)=" << tmp(i) << std::endl;
+//                (a(arma::span(b,e))).print("w=");
+//                if (i>10) exit(1);
+//                tmp(i) = arma::accu( a(arma::span(b,e)))/(float) (e-b+1);
+            }
+            a = tmp;
+            });
+    return retorno;
+}
+
+arma::fmat fmean2(arma::fmat const &I) {
+    int r = 60;
+    //arma::fmat tmp(I.n_rows, I.n_cols);
+    //arma::fmat tmp2(arma::size(I));
+    arma::fmat Mconv(2*r,2*r);
+    Mconv.ones();
+    Mconv /= (4*r*r);
+//    arma::fmat Mconv = arma::ones(2*r,2*r)/(4*r*r);
+    arma::fmat tmp2 = arma::conv2(I, Mconv, "same");
+
+    /*
+    for (int y=0; y < I.n_rows; y++) {
+//        if (y%100==0) std::cout << " -> " << y << "/" << I.n_rows << std::endl;
+        for (int x=0; x < I.n_cols; x++) {
+            *//*
+               arma::fmat W = fetchWindow(I, x, y, r);
+               tmp2(x,y) = arma::accu(W);
+               */
+    /*
+            tmp2(y,x) = fetchMean(I, x, y, r);
+        }
+    }
+*/
+    //    tmp2 = tmp2/(double) (r*r);
+    return tmp2;
+}
+
+float fetchMean(arma::fmat const &I, int x, int y, int r) {
+    if (VERBOSE) {
+        std::cout << "fetchWindow: x=" << x << " y=" << y << " r=" << r << std::endl;
+    }
+    int r2 = r/2;
+
+    int xi = std::max(x-r2, 0);
+    int yi = std::max(y-r2, 0);
+    int xf = std::min(x+r2, ((int) I.n_cols)-1);
+    int yf = std::min(y+r2, ((int) I.n_rows)-1);
+
+    arma::fmat W = I(arma::span(yi,yf), arma::span(xi,xf));
+    float mean = arma::accu(W)/(W.n_cols*W.n_rows);
+
+    if (VERBOSE) {
+        std::cout << "x = [" << xi << "," << xf << "]  y = [" << yi << "," << yf << "]" << std::endl;
+        W.print(std::cout, "W");
+    }
+    return mean;
+}
+
+arma::fmat fetchWindow(arma::fmat const &I, int x, int y, int r) {
+    if (VERBOSE) {
+        std::cout << "fetchWindow: x=" << x << " y=" << y << " r=" << r << std::endl;
+    }
+    int r2 = r/2;
+    arma::fmat tmp(r, r);
+    for (int i = 0; i < r; i++) {
+        for (int j = 0; j < r; j++) {
+            int px = std::min((int) I.n_cols-1, std::max(0, x+i-r2));
+            int py = std::min((int) I.n_rows-1, std::max(0, y+j-r2));
+            tmp (i,j) = I(px,py);
+        }
+    }
+//    tmp.print(std::cout, "fetchWindow");
+    return tmp;
 }
