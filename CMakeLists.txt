@@ -7,6 +7,7 @@ set (CMAKE_CXX_STANDARD 11)
  
 project(Haze)
  
+find_package(OpenMP REQUIRED)
 find_package(ITK REQUIRED)
 include(${ITK_USE_FILE})
 if (ITKVtkGlue_LOADED)

@@ -6,6 +6,10 @@
 #include "QuickView.h"
 #define ARMA_NO_DEBUG
 #define ARMA_MAT_PREALLOC 3
+#define ARMA_USE_BLAS
+#define ARMA_USE_SUPERLU
+#define ARMA_USE_CXX11
+#define ARMA_USE_OPENMP
 #include <armadillo>
 #include <armadillo_bits/arma_forward.hpp>
 #include <stdlib.h>
@@ -18,6 +22,8 @@
 #include <mutex>
 #include <atomic>
 #include <unordered_map>
+#include <functional>
+#include <future>
 
 #include <boost/asio.hpp>
 #include <boost/thread.hpp>
@@ -394,16 +400,37 @@ void dark_channel(typename ImageGrayType::Pointer image_min, typename ImageGrayT
         }
     }
   std::cout << "Criando Dark Channel..." << std::endl;
+  I.each_row([Patch_window](arma::Row<float> &a) {
+          arma::Row<float> tmp(a.n_elem);
+          for (int i=0; i<a.n_elem;i++) {
+            int b = std::max(0,i-Patch_window);
+            int e = std::min((int) a.n_elem-1, i+Patch_window-1);
+            tmp(i) = a(arma::span(b,e)).min();
+          }
+          a = tmp;
+          });
+  I.each_col([Patch_window](arma::Col<float> &a) {
+          arma::Row<float> tmp(a.n_elem);
+          for (int i=0; i<a.n_elem;i++) {
+            int b = std::max(0,i-Patch_window);
+            int e = std::min((int) a.n_elem-1, i+Patch_window-1);
+            tmp(i) = a(arma::span(b,e)).min();
+          }
+          a = tmp;
+          });
+
   /* Criar o Prior Dark Channel usando o minimo de um filtro Patch_window X Patch_window (e.g. 15x15) */
   for (int i = 0; i < size[0]; i++) {
       for (int j = 0; j < size[1]; j++) {
 
+          /*
           int i1, i2, j1, j2;
           i1 = std::max(i-Patch_window,0);
           i2 = std::min(i+Patch_window, (int) size[0]-1);
           j1 = std::max(j-Patch_window,0);
           j2 = std::min(j+Patch_window, (int) size[1]-1);
           float min = I(arma::span(i1,i2),arma::span(j1,j2)).min();
+          */
           /*
           auto min = image_min->GetPixel({i1,j1});
 //          std::cout << "Dark channel para (" << i << "," << j << ") nos intervalos: (" << i1 << "," << j1 << ") e (" << i2 << "," << j2 << ")" << std::endl;
@@ -415,7 +442,7 @@ void dark_channel(typename ImageGrayType::Pointer image_min, typename ImageGrayT
               }
           }
           */
-          image_dark->SetPixel({i,j}, min);
+          image_dark->SetPixel({i,j}, I(i,j));
 //          exit(1);
       }
   }
@@ -1180,26 +1207,56 @@ void guided_filtering (ImageType::Pointer image_in, ImageGrayType::Pointer image
     std::cout << "Done" << std::endl;
 }
 
+void sumRow(arma::fmat const &I_in, int r, arma::fmat &retorno, int i, std::mutex &mtx) {
+    arma::Row<float> a = I_in.row(i);
+    arma::Row<float> tmp(a.n_elem); 
+    for (int i=0; i < a.n_elem; i++) {
+        int b = std::max(0,i-r/2);
+        int e = std::min(i+r/2,(int) a.n_elem-1);
+        tmp(i) = (arma::mean(a(arma::span(b,e))));
+    }
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        retorno.row(i) = tmp;
+    }
+}
+
+void sumCol(arma::fmat const &I_in, int r, arma::fmat &retorno, int i, std::mutex &mtx) {
+    arma::Col<float> a = I_in.col(i);
+    arma::Col<float> tmp(a.n_elem); 
+    for (int i=0; i < a.n_elem; i++) {
+        int b = std::max(0,i-r/2);
+        int e = std::min(i+r/2,(int) a.n_elem-1);
+        tmp(i) = (arma::mean(a(arma::span(b,e))));
+    }
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        retorno.col(i) = tmp;
+    }
+}
+
+
 
 arma::fmat fmean(arma::fmat const &I_in) {
 //    return fmean2(I_in);
-    int r = 60;
-    arma::fmat retorno(I_in);
-    retorno.each_row([r](arma::Row<float> &a) {
-            arma::Row<float> tmp(a.n_elem); 
-            for (int i=0; i < a.n_elem; i++) {
-                int b = std::max(0,i-r/2);
-                int e = std::min(i+r/2,(int) a.n_elem-1);
-                arma::fmat w(arma::mean(a(arma::span(b,e)),1));
-                tmp(i) = w(0);
-//                std::cout << "Row: i=" << i << " [" << b << "," << e << "](" << e-b << ") tmp(i)=" << tmp(i) << std::endl;
-//                w.print("w=");
-//                (arma::mean(w,1)).print("mean=");
-//                if (i>10) exit(1);
-//                tmp(i) = arma::accu( a(arma::span(b,e)))/(float) (e-b+1);
-            }
-            a = tmp;
-            });
+    int r = 200;
+    arma::fmat retorno(arma::size(I_in));
+    arma::fmat retorno2(arma::size(I_in));
+    std::vector<std::future<void>> jobs;
+    std::mutex mtx;
+
+    for (int i=0; i<I_in.n_rows; i++) {
+        jobs.push_back(std::async(std::launch::async, sumRow, std::cref(I_in), r, std::ref(retorno), i, std::ref(mtx)));
+    }
+    for (auto &i : jobs) i.wait();
+    std::vector<std::future<void>>().swap(jobs);
+
+    for (int i=0; i<I_in.n_cols; i++) {
+        jobs.push_back(std::async(std::launch::async, sumCol, std::cref(retorno), r, std::ref(retorno2), i, std::ref(mtx)));
+    }
+    for (auto &i : jobs) i.wait();
+
+    /*
     retorno.each_col([r](arma::Col<float> &a) {
             arma::Col<float> tmp(a.n_elem); 
             for (int i=0; i < a.n_elem; i++) {
@@ -1214,7 +1271,8 @@ arma::fmat fmean(arma::fmat const &I_in) {
             }
             a = tmp;
             });
-    return retorno;
+            */
+    return retorno2;
 }
 
 arma::fmat fmean2(arma::fmat const &I) {
