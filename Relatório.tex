@@ -33,6 +33,7 @@
 \usepackage{multicol}
 \usepackage{stfloats}
 \usepackage{booktabs,tabularx}
+\usepackage{ffclrp}
 
 
 % ---- BIBLIOGRAFIA ----
@@ -50,7 +51,6 @@
 %\DeclareMathOperator*{\min}{min}
 %\DeclareMathOperator*{\max}{max}
 
-
 %\appto{\bibfont}{\footnotesize}
 %\appto{\bibsetup}{\raggedright}
 %\renewcommand*{\bibfont}{\small}
@@ -58,23 +58,23 @@
 
 % \renewcommand{\baselinestretch}{1.5cm} 
  
-\titulo{Single Image Haze Removal Using Dark Channel Prior}
+\titulo{Implementação em C++: Single Image Haze Removal Using Dark Channel Prior}
 %\subtitulo{Implementação da técnica em C++}
 \autor{Vinicius Pavanelli Vianna}
 \data{2017}
 \local{Ribeirão Preto - SP}
-\tipotrabalho{Implementação em C++}
+%\tipotrabalho{Trabalho Final}
 
 \instituicao{%
-	UNIVERSIDADE DE SÃO PAULO
+	PROCESSAMENTO E ANÁLISE DE IMAGENS MÉDICAS
+	\vspace{1cm}
 	\par
-	FFCLRP - DEPARTAMENTO DE FÍSICA
+	FFCLRP - FACULDADE DE FILOSOFIA, CIÊNCIAS E LETRAS DE RIBEIRÃO PRETO
 	\par
-PROGRAMA DE PÓS-GRADUAÇÃO EM
-\par
-FÍSICA APLICADA À MEDICINA E BIOLOGIA (FAMB)}
+FAMB - FÍSICA APLICADA À MEDICINA E BIOLOGIA%\includegraphics[width=10cm]{texfiles/ffclrp.pcx}
+}
 
-\preambulo{Implementação em C++}
+\preambulo{Trabalho Final}
 
 
 \makeatletter
@@ -93,9 +93,15 @@ FÍSICA APLICADA À MEDICINA E BIOLOGIA (FAMB)}
 	bookmarksdepth=4,
 	allcolors=black
 }
+
+
+
 \makeatother
 
 \makeindex
+
+
+
 
 
 %\linespread{1.5}
@@ -105,9 +111,7 @@ FÍSICA APLICADA À MEDICINA E BIOLOGIA (FAMB)}
 	\frenchspacing 
 
 %\imprimircapa
-
 \imprimirfolhaderosto
-
 		\newpage
 		
 %		\pdfbookmark[0]{\contentsname}{toc}%
@@ -198,8 +202,10 @@ J(x) = \frac{I(x)-A}{max(t(x), t_0)} + A
 \end{equation}
 O valor da luz atmosférica $A$ ou $A_c$ pode ser estimado, se não for fornecido inicialmente, utilizando um método proposto também em \cite{matting}, aonde são selecionados os $0,1\%$ pixels mais claros dentro do canal escuro $J^{dark}$ calculado, e então se encontra o pixel mais claro na imagem original, dentro desses pixels encontrados no canal escuro, este pixel mais claro será a estimativa da luz atmosférica $A$.
 
-Um outro método para obter o mapa de transmissão $t(x)$ a partir de $\tilde{t}(x)$ e $I(x)$ foi proposto pelos mesmos autores em \cite{guided_filtering}, que tem a vantagem de ser muito mais eficiente, não acarretando mais na solução da matriz esparsa $L$ mas sim em um método direto que tem complexidade computacional da ordem de $O(N)$, dado pelo algoritmo:
+Um outro método para obter o mapa de transmissão $t(x)$ a partir de $\tilde{t}(x)$ e $I(x)$ foi proposto pelos mesmos autores em \cite{guided_filtering}, que tem a vantagem de ser muito mais eficiente, não acarretando mais na solução da matriz esparsa $L$ mas sim em um método direto que tem complexidade computacional da ordem de $O(N)$, dado pelo algoritmo na Tabela \ref{tabela:guided}.
 
+\begin{table}
+	\caption{Algoritmo \textit{guided filtering}}\label{tabela:guided}
 \begin{tabularx}{\textwidth}{rl}
 \toprule
 \multicolumn{2}{c}{Algoritmo 1: Guided Filter}\\
@@ -220,6 +226,112 @@ Um outro método para obter o mapa de transmissão $t(x)$ a partir de $\tilde{t}
 5: & $q = mean_a .* I + mean_b$ \\
 \bottomrule
 \end{tabularx}
+\legend{Fonte: \cite{guided_filtering}}
+\end{table}
+\clearpage
+\section{Implementação C++}
+O algoritmo descrito no paper, tanto usando \textit{soft matting}  quanto \textit{guided filtering} foi implementado em C++ utilizando as seguintes bibliotecas livres:
+\begin{description}
+	\item[ITK] \textit{Insight Segmentation and Registration Toolkit} é uma biblioteca para análise de imagens, disponível em \url{https://itk.org/}
+	\item[VTK] \textit{Visualization Toolki} é uma biblioteca para processamento e visualização de imagens, compatível com a ITK, disponível em \url{https://www.vtk.org/}
+	\item[Armadillo] Armadillo é uma biblioteca de algebra linear de alta qualidade, possui uma API similar ao MATLAB e também pode ser integrada com outras bibliotecas de alta performance como \texttt{LAPACK}, \texttt{Intel MKL} e \texttt{SuperLU}, entre outras, disponível em \url{http://arma.sourceforge.net/}
+	\item[Boost] Boost é uma biblioteca revisada por pares de alta qualidade, possuindo vários módulos para praticamente todos os tipos de tarefas, com muitos deles sendo integrados aos padrões C++ ao longo do tempo, disponível em \url{http://www.boost.org/}
+\end{description}
+
+O diagrama de blocos que representa o funcionamento do código pode ser visto na Figura \ref{diagrama_bloco} e uma listagem das funções principais pode ser encontrada na Tabela \ref{tab:funcoes}. Note que para o uso de multitarefa e também para facilitar o desenvolvimento e depuração do código muitas funções auxiliares foram criadas, como por exemplo para transformar os índices $i$ e $j$ da matriz $L$ em índices de pixels na imagem, para encontrar as janelas $w_k$ contendo dois pontos, e funções auxiliares para o cálculo de $L$ que são chamadas pelas threads.
+
+
+
+
+\begin{figure}[h]
+
+	\begin{center}
+		\caption{\label{diagrama_bloco}Diagrama de Blocos}
+		%\begin{tikzpicture}[auto, node distance=1cm,>=latex']
+\tikzstyle{block} = [draw, fill=blue!20, rectangle, 
+minimum height=3em,  font=\footnotesize]
+\tikzstyle{sum} = [draw, fill=blue!20, circle, node distance=1cm]
+\tikzstyle{input} = [coordinate]
+\tikzstyle{output} = [coordinate]
+\tikzstyle{pinstyle} = [pin edge={to-,thin,black}]
+
+		\begin{tikzpicture}[
+		auto, 
+		ultra thick, 
+		%scale=0.5, 
+		%>=latex'
+		]
+		\node [block, minimum height=2cm] (image) {Imagem Haze};
+		\node [block, right=of image] (minima) {minima()};
+		\node [block, right=of minima] (dark) {dark\_channel()};
+		\node [block, right=of dark] (achaA) {achaA()};
+		\node [block, below=of image] (corrigeA) {corrigeA()};
+		\node [block, right=of corrigeA] (minima2) {minima()};
+		\node [block, right=of minima2] (dark2) {dark\_channel()};
+		\node [block, below=of dark2] (calculaT) {calculaT()};
+		\node [block, left=of calculaT] (matting) {matting2()};
+		\node [block, right=of calculaT] (guided) {guided\_filtering()};
+		\node [block, below=of calculaT] (tirahaze) {tiraHaze()};
+		\node [block, below=of tirahaze] (out) {Imagem Saída};
+		
+		\draw[->] (image.east) -- (minima.west);
+		\draw[->] (minima.east) -- (dark.west);
+		\draw[->] (dark.east) -- (achaA.west);
+		\draw[->] (image.south) -- (corrigeA.north);
+		\draw[->] (corrigeA.east) -- (minima2.west);
+		\draw[->] (minima2.east) -- (dark2.west);
+		\draw[->] (dark2.south) -- (calculaT.north);
+		\draw[->] (achaA.south west) -- (corrigeA.north east);
+		\draw[->] (calculaT.west) -- (matting.east);
+		\draw[->] (calculaT.east) -- (guided.west);
+		\draw[->] (matting.south east) -- (tirahaze.north west);
+		\draw[->] (guided.south west) -- (tirahaze.north east);
+		\draw[->] (tirahaze.south) -- (out.north);
+		
+		\end{tikzpicture}
+	\end{center}
+	\legend{ 
+		Fonte: Autor}
+\end{figure}
+
+\begin{table}
+\caption{Funções do código C++}\label{tab:funcoes}
+\begin{tabularx}{\textwidth}{rp{0.7\linewidth}}
+\toprule
+\multicolumn{2}{c}{Funções do código C++}\\
+\midrule
+\texttt{minima()} & Calcula uma imagem em tons de cinza com o valor mínimo entre os canais RGB\\
+\texttt{dark\_channel()} & Calcula uma imagem em tons de cinza com o valor mínimo em uma janela $15\times 15$\\
+\texttt{achaA()} & Encontra o valor de $A^c$ dentre os $0,01\%$ pixels mais claros do $J^{dark}$ e da imagem de entrada\\
+\texttt{corrigeA()} & Normaliza a imagem usando o valor da luz atmosférica $A^c$\\
+\texttt{calculaT()} & Calcula o valor de $\tilde{t(x)}$ a partir do $J^{dark}$\\
+\texttt{matting2()} & Gera o mapa $t(x)$ a partir de $\tilde{t}(x)$ usando \textit{soft matting}\\
+\texttt{guided\_filtering()} & Gera o mapa $t(x)$ a partir de $\tilde{t}(x)$ usando \textit{guided filtering}\\
+\texttt{tiraHaze()} & Gera a estimativa de $J(x)$ a partir de $I(x)$, $A^c$ e $t(x)$\\
+\bottomrule
+\end{tabularx}
+\legend{Fonte: Autor}
+\end{table}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+\clearpage
+
+
+
 \bibliography{bibliografia}
 
 %		\printbibliography
