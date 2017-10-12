@@ -258,7 +258,7 @@ int main(int argc, char *argv[])
 
   }
   guided_filtering(image, image_tchapeu, image_t);
-//  matting2 (image, image_tchapeu, image_t2);
+//  matting2 (image, image_tchapeu, image_t);
 
   FilterType::Pointer bilateralFilter = FilterType::New();
   bilateralFilter->SetInput( image_t.GetPointer() );
